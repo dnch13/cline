@@ -141,6 +141,38 @@ export function applyMessage(state: ReplicaState, incoming: ClineMessage): Repli
 }
 
 /**
+ * Apply a page of OLDER messages fetched via TaskService.getTranscriptPage
+ * (transcript windowing / infinite scroll). Page messages arrive in ascending
+ * order and belong to the CURRENT epoch's conversation, but with ts ids that
+ * precede the replica's head (id-stable for the active task; see the RPC
+ * handler). They are inserted at the FRONT of the rendering array, deduped by
+ * ts against what the replica already holds.
+ *
+ * Ordering note: insertion is positional (before the current head), NOT
+ * ts-sorted, because the inactive-task fallback path re-mints ts ids per open —
+ * logically-older page messages can carry numerically larger ids than the tail.
+ */
+export function prependMessages(state: ReplicaState, page: ClineMessage[]): ReplicaState {
+	if (page.length === 0) {
+		return state
+	}
+	const fresh: ClineMessage[] = []
+	for (const message of page) {
+		if (!state.seqByTs.has(message.ts)) {
+			fresh.push(message)
+		}
+	}
+	if (fresh.length === 0) {
+		return state
+	}
+	const seqByTs = new Map(state.seqByTs)
+	for (const message of fresh) {
+		seqByTs.set(message.ts, seqOf(message))
+	}
+	return { ...state, messages: [...fresh, ...state.messages], seqByTs }
+}
+
+/**
  * Apply a full state snapshot's transcript.
  *
  *  - older epoch        -> drop entirely

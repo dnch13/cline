@@ -1,20 +1,26 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import type React from "react"
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Virtuoso } from "react-virtuoso"
-import ChatRow from "@/components/chat/ChatRow"
+import ChatRow, { ProgressIndicator } from "@/components/chat/ChatRow"
 import { StickyUserMessage } from "@/components/chat/task-header/StickyUserMessage"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { cn } from "@/lib/utils"
 import { useThinkingLoaderRow } from "../../hooks/useThinkingLoaderRow"
+import { useTranscriptPagination } from "../../hooks/useTranscriptPagination"
 import type { ChatState, MessageHandlers, ScrollBehavior } from "../../types/chatTypes"
-import type { ActiveRecoveryDecoration } from "../../utils/messageUtils"
+import { type ActiveRecoveryDecoration, createFrontGrowthDetector } from "../../utils/messageUtils"
 import { isPendingResponseUnconfirmed } from "../../utils/pendingResponse"
 import { createMessageRenderer } from "../messages/MessageRenderer"
 
 // Sentinel ts for the synthetic "Thinking..." placeholder row. Not a real message; ignored when
 // deriving scroll triggers from the tail of the rendered list.
 const WAITING_ROW_TS = Number.MIN_SAFE_INTEGER
+
+// Base for Virtuoso's firstItemIndex (prepend mechanism): decremented by the row
+// count of each prepended older-transcript page so the viewport stays anchored.
+// Large enough that a very long paged history never reaches zero.
+const FIRST_ITEM_INDEX_BASE = 100_000_000
 
 // Synthetic placeholder rendered while waiting for the model with no visible rows streaming.
 const WAITING_ROW: ClineMessage = {
@@ -51,6 +57,24 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 }) => {
 	const { clineMessages, turnState } = useExtensionState()
 	const lastRawMessage = useMemo(() => clineMessages.at(-1), [clineMessages])
+
+	// Transcript windowing: older pages fetched on demand via getTranscriptPage.
+	const { hasEarlierMessages, isLoadingEarlierMessages, loadEarlierMessages } = useTranscriptPagination()
+	const isLoadingEarlierRef = useRef(false)
+	useEffect(() => {
+		isLoadingEarlierRef.current = isLoadingEarlierMessages
+	}, [isLoadingEarlierMessages])
+	// Auto-load exactly ONE page per arrival at the top (edge-triggered): while the
+	// user sits at the start after a prepend, no further page loads until they
+	// scroll away and come back — otherwise Virtuoso's continuous startReached /
+	// index-0 visibility would chain-load the whole history.
+	const atStartRef = useRef(false)
+	const handleStartReached = useCallback(() => {
+		if (!atStartRef.current && hasEarlierMessages && !isLoadingEarlierRef.current) {
+			loadEarlierMessages()
+		}
+		atStartRef.current = true
+	}, [hasEarlierMessages, loadEarlierMessages])
 
 	const {
 		virtuosoRef,
@@ -141,7 +165,47 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 		return undefined
 	}, [displayedGroupedMessages])
 
+	// Front growth (older transcript pages prepended via infinite scroll) must not
+	// trigger bottom-pinning — the user is reading the oldest end of the chat.
+	const detectFrontGrowth = useRef(createFrontGrowthDetector()).current
+
+	// Virtuoso scroll preservation for prepended older pages: react-virtuoso only
+	// keeps the viewport anchored when a prepend DECREASES firstItemIndex by exactly
+	// the number of rows added at the front (its documented prepend mechanism —
+	// grouping merges rows, so the row delta can be smaller than the fetched page
+	// size; measure it off the rendered list itself).
+	const [pagination, setPagination] = useState({ taskTs: task.ts, firstItemIndex: FIRST_ITEM_INDEX_BASE })
+	if (pagination.taskTs !== task.ts) {
+		// Task switch remounts Virtuoso (key={task.ts}); reset synchronously during
+		// render so the fresh mount starts from the base index.
+		setPagination({ taskTs: task.ts, firstItemIndex: FIRST_ITEM_INDEX_BASE })
+	}
+	const firstItemIndex = pagination.taskTs === task.ts ? pagination.firstItemIndex : FIRST_ITEM_INDEX_BASE
+	const prevRowCountRef = useRef(0)
+	const prevHeadTsRef = useRef<number | undefined>(undefined)
 	useEffect(() => {
+		const head = displayedGroupedMessages[0]
+		const headTs = head ? (Array.isArray(head) ? head[0]?.ts : head?.ts) : undefined
+		const prevLen = prevRowCountRef.current
+		const prevHead = prevHeadTsRef.current
+		const stillHasPrevHead =
+			prevHead !== undefined &&
+			displayedGroupedMessages.some((row) => (Array.isArray(row) ? row[0]?.ts : row?.ts) === prevHead)
+		if (displayedGroupedMessages.length > prevLen && prevHead !== undefined && headTs !== prevHead && stillHasPrevHead) {
+			setPagination((s) =>
+				s.taskTs === task.ts
+					? { ...s, firstItemIndex: s.firstItemIndex - (displayedGroupedMessages.length - prevLen) }
+					: s,
+			)
+		}
+		prevRowCountRef.current = displayedGroupedMessages.length
+		prevHeadTsRef.current = headTs
+	}, [displayedGroupedMessages, task.ts])
+
+	useEffect(() => {
+		if (detectFrontGrowth(displayedGroupedMessages)) {
+			return
+		}
 		if (disableAutoScrollRef.current) {
 			return
 		}
@@ -153,7 +217,15 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 				scrollToBottomAuto()
 			}
 		}, 50)
-	}, [displayedGroupedMessages.length, lastTailTs, scrollToBottomSmooth, scrollToBottomAuto, disableAutoScrollRef])
+	}, [
+		displayedGroupedMessages,
+		displayedGroupedMessages.length,
+		lastTailTs,
+		scrollToBottomSmooth,
+		scrollToBottomAuto,
+		disableAutoScrollRef,
+		detectFrontGrowth,
+	])
 
 	// Re-engage auto scroll when a new turn starts streaming. In the old extension every turn start
 	// came from a webview action (send, approve, resume) whose handler reset disableAutoScrollRef;
@@ -199,11 +271,31 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 	)
 
 	// Keep footer as a simple spacer. Thinking loading is rendered as an in-list row.
+	// The header offers manual paging for windowed transcripts (older messages are
+	// otherwise fetched one page per arrival at the top via startReached).
 	const virtuosoComponents = useMemo(
 		() => ({
 			Footer: () => <div className="min-h-1" />,
+			Header: () =>
+				isLoadingEarlierMessages || hasEarlierMessages ? (
+					<div className="flex justify-center py-2">
+						{isLoadingEarlierMessages ? (
+							<span className="flex items-center gap-2 text-xs text-muted-foreground">
+								<ProgressIndicator />
+								Loading earlier messages…
+							</span>
+						) : (
+							<button
+								className="text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-50"
+								disabled={isLoadingEarlierMessages}
+								onClick={() => void loadEarlierMessages()}>
+								Load earlier messages
+							</button>
+						)}
+					</div>
+				) : null,
 		}),
-		[],
+		[hasEarlierMessages, isLoadingEarlierMessages, loadEarlierMessages],
 	)
 
 	return (
@@ -255,16 +347,24 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 					className="scrollable grow overflow-y-scroll"
 					components={virtuosoComponents}
 					data={displayedGroupedMessages}
+					firstItemIndex={firstItemIndex}
 					// increasing top by 3_000 to prevent jumping around when user collapses a row
 					increaseViewportBy={{
 						top: 3_000,
 						bottom: Number.MAX_SAFE_INTEGER,
 					}} // hack to make sure the last message is always rendered to get truly perfect scroll to bottom animation when new messages are added (Number.MAX_SAFE_INTEGER is safe for arithmetic operations, which is all virtuoso uses this value for in src/sizeRangeSystem.ts)
-					initialTopMostItemIndex={displayedGroupedMessages.length - 1} // messages is the raw format returned by extension, modifiedMessages is the manipulated structure that combines certain messages of related type, and visibleMessages is the filtered structure that removes messages that should not be rendered
+					initialTopMostItemIndex={firstItemIndex + displayedGroupedMessages.length - 1} // start at the bottom; expressed in firstItemIndex space (data[0] has index firstItemIndex) so prepended pages don't shift it
 					itemContent={itemContent}
 					key={task.ts}
-					rangeChanged={handleRangeChanged}
-					ref={virtuosoRef} // anything lower causes issues with followOutput
+					rangeChanged={(range) => {
+						handleRangeChanged(range)
+						// Leaving the top re-arms the startReached auto-paging trigger.
+						if (range.startIndex > 0) {
+							atStartRef.current = false
+						}
+					}}
+					ref={virtuosoRef}
+					startReached={handleStartReached} // anything lower causes issues with followOutput
 					style={{
 						scrollbarWidth: "none", // Firefox
 						msOverflowStyle: "none", // IE/Edge

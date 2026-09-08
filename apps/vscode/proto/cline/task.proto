@@ -4,6 +4,7 @@ package cline;
 
 import "cline/common.proto";
 import "cline/state.proto";
+import "cline/ui.proto";
 
 option go_package = "github.com/cline/grpc-go/cline";
 option java_multiple_files = true;
@@ -45,6 +46,36 @@ service TaskService {
   rpc executeQuickWin(ExecuteQuickWinRequest) returns (Empty);
   // Deletes all task history
   rpc deleteAllTaskHistory(EmptyRequest) returns (DeleteAllTaskHistoryCount);
+  // Loads one page of OLDER transcript messages for a long task (infinite scroll).
+  // The initial state snapshot only carries the transcript tail (see
+  // ExtensionState.transcriptWindow); this RPC pages backwards from beforeTs.
+  rpc getTranscriptPage(TranscriptPageRequest) returns (TranscriptPageResponse);
+}
+
+// Request for paging backwards through a task transcript
+message TranscriptPageRequest {
+  // Task/session id whose transcript to page
+  string task_id = 1;
+  // Return messages strictly older than this ts (the ts of the oldest message
+  // the caller currently holds). 0 returns the transcript tail.
+  int64 before_ts = 2;
+  // Maximum number of messages to return
+  int32 limit = 3;
+  // How many messages of this transcript the caller currently holds. Used as
+  // the paging boundary for inactive tasks, whose transcript is re-translated
+  // on demand with freshly minted ts ids (so beforeTs from an older
+  // translation cannot be compared directly).
+  int32 loaded_count = 4;
+}
+
+// One page of transcript messages, oldest-to-newest order
+message TranscriptPageResponse {
+  // The page's messages in chronological (ascending ts) order
+  repeated ClineMessage messages = 1;
+  // True when older messages still exist before this page
+  bool has_more = 2;
+  // Total transcript length on the extension side
+  int32 total = 3;
 }
 
 // Request message for creating a new task

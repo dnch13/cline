@@ -176,6 +176,14 @@ export class Controller {
 	private diffEdits: SdkDiffEditCoordinator
 	private sessionConfigBuilder: SdkSessionConfigBuilder
 	private taskHistory: SdkTaskHistory
+	/**
+	 * Fallback transcript cache for TaskService.getTranscriptPage: per-task
+	 * translated arrays for INACTIVE tasks, so consecutive page fetches see
+	 * id-stable messages (a fresh translation per fetch would re-mint ids and
+	 * make paging boundaries meaningless). LRU-bounded; active tasks use their
+	 * live in-memory array instead.
+	 */
+	private readonly transcriptFallbackCache = new Map<string, ClineMessage[]>()
 	private mode: SdkModeCoordinator
 	private mcpTools: SdkMcpCoordinator
 	private terminalExecutionMode: SdkTerminalExecutionModeCoordinator
@@ -2337,12 +2345,54 @@ export class Controller {
 		await open(taskDirPath)
 	}
 
+	/**
+	 * Full translated transcript for a task, for transcript pagination
+	 * (TaskService.getTranscriptPage). Prefers the ACTIVE task's in-memory
+	 * message array — the exact array the windowed state snapshot was sliced
+	 * from — so returned page messages carry the same ts ids the webview
+	 * replica already holds (id-stable paging). Falls back to task history
+	 * (SQLite-derived cache) for inactive tasks; the fallback result is cached
+	 * per task so consecutive page fetches observe the same ids.
+	 */
+	async getTranscriptMessages(taskId: string): Promise<ClineMessage[]> {
+		if (this.task?.taskId === taskId) {
+			const live = this.task.messageStateHandler.getClineMessages()
+			if (live.length > 0) {
+				return live
+			}
+		}
+		const cached = this.transcriptFallbackCache.get(taskId)
+		if (cached) {
+			// LRU refresh
+			this.transcriptFallbackCache.delete(taskId)
+			this.transcriptFallbackCache.set(taskId, cached)
+			return cached
+		}
+		const messages = await this.taskHistory.getClineMessages(taskId)
+		this.transcriptFallbackCache.set(taskId, messages)
+		while (this.transcriptFallbackCache.size > 4) {
+			const oldest = this.transcriptFallbackCache.keys().next().value
+			if (oldest === undefined) {
+				break
+			}
+			this.transcriptFallbackCache.delete(oldest)
+		}
+		return messages
+	}
+
+	/** Drop any cached fallback transcript for a deleted task. */
+	invalidateTranscriptFallbackCache(taskId: string): void {
+		this.transcriptFallbackCache.delete(taskId)
+	}
+
 	async deleteTaskFromState(id: string): Promise<HistoryItem[]> {
+		this.invalidateTranscriptFallbackCache(id)
 		return this.taskHistory.deleteTaskFromState(id)
 	}
 
 	async deleteAllTaskHistory(): Promise<DeleteAllTaskHistoryCount> {
 		await this.clearTask()
+		this.transcriptFallbackCache.clear()
 
 		const taskHistory = await this.taskHistory.listHistory({ hydrate: false })
 		const totalTasks = taskHistory.length

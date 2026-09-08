@@ -19,6 +19,7 @@ import {
 import type { MessageIdMinter } from "./message-id-minter"
 import { sdkMessagesToClineMessages } from "./message-translator"
 import type { SdkSessionLifecycle } from "./sdk-session-lifecycle"
+import { computeTranscriptSourceKey, getUiTranscriptStore } from "./sqlite-transcript-store"
 import type { VscodeSessionHost } from "./vscode-session-host"
 
 export interface TaskUsage {
@@ -505,11 +506,29 @@ export class SdkTaskHistory {
 		this.invalidateMetadataHistoryCache()
 	}
 
-	async getClineMessages(taskId: string): Promise<ClineMessage[]> {
-		const sdkRecord = await this.getSdkRecord(taskId)
-		const legacyTask = this.findLegacyTask(taskId)
-		if (!sdkRecord && legacyTask) {
-			return readUiMessages(taskId, legacyTask.dataDir)
+	/**
+	 * Translated UI transcript for an SDK task, served from the SQLite derived
+	 * cache when the SDK messages file is unchanged (see sqlite-transcript-store.ts).
+	 * A cache hit skips both the whole-file JSON parse and the
+	 * sdkMessagesToClineMessages translation — the dominant cost of opening a
+	 * long task. Cached rows are re-stamped with the process-wide minter so
+	 * their ids can never collide with ids minted by live translation later in
+	 * this process (the same invariant a fresh translation provides).
+	 */
+	private async getTranslatedSdkMessages(taskId: string, sdkRecord: SessionHistoryRecord | undefined): Promise<ClineMessage[]> {
+		const messagesPath = typeof sdkRecord?.messagesPath === "string" ? sdkRecord.messagesPath.trim() : ""
+		const sourceKey = messagesPath ? computeTranscriptSourceKey(messagesPath) : undefined
+		if (sdkRecord && sourceKey) {
+			const cached = getUiTranscriptStore().readAll(taskId, sourceKey)
+			if (cached) {
+				const minter = this.options.getMinter?.()
+				if (minter) {
+					for (const message of cached) {
+						message.ts = minter.nextId()
+					}
+				}
+				return cached
+			}
 		}
 
 		const sdkMessages = await this.withHistoryHost((host) => host.readMessages(taskId) as Promise<SdkMessage[]>)
@@ -532,6 +551,20 @@ export class SdkTaskHistory {
 				cwd: sdkRecord?.cwd || sdkRecord?.workspaceRoot || undefined,
 			},
 		)
+		if (sdkRecord && sourceKey) {
+			getUiTranscriptStore().replaceAll(taskId, clineMessages, sourceKey)
+		}
+		return clineMessages
+	}
+
+	async getClineMessages(taskId: string): Promise<ClineMessage[]> {
+		const sdkRecord = await this.getSdkRecord(taskId)
+		const legacyTask = this.findLegacyTask(taskId)
+		if (!sdkRecord && legacyTask) {
+			return readUiMessages(taskId, legacyTask.dataDir)
+		}
+
+		const clineMessages = await this.getTranslatedSdkMessages(taskId, sdkRecord)
 		// Re-append durable display-only error rows (e.g. the terminal
 		// mistake-limit stop): the transcript only carries conversation
 		// messages, so live-only rows would otherwise vanish on restart.
@@ -678,6 +711,8 @@ export class SdkTaskHistory {
 		if (legacyTask) {
 			deleteLegacyTask(sessionId, legacyTask.dataDir)
 		}
+		// Also drop the derived SQLite transcript cache for this task.
+		getUiTranscriptStore().delete(sessionId)
 		this.invalidateMetadataHistoryCache()
 	}
 

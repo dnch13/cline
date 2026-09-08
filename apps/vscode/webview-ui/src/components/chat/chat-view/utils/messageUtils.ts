@@ -836,3 +836,31 @@ export function getIconByToolName(toolName: string) {
 			return WrenchIcon
 	}
 }
+
+/**
+ * Detects whether successive grouped-message lists grew at the FRONT (older
+ * transcript pages prepended via getTranscriptPage infinite scroll) as opposed
+ * to tail growth (streaming) or a wholesale replace (task/epoch switch).
+ *
+ * Auto-scroll-to-bottom effects keyed on list length must NOT fire for front
+ * growth: the user is looking at the OLDEST end of the conversation when pages
+ * prepend, and yanking them to the bottom would be disorienting.
+ *
+ * Identification is by the first row's representative ts (groups are rebuilt
+ * with fresh array identities on every recompute, so object identity is
+ * useless). Front growth = the list got longer AND the head changed AND the
+ * previous head is still present somewhere in the list (rules out a replace).
+ */
+export function createFrontGrowthDetector(): (rows: (ClineMessage | ClineMessage[])[]) => boolean {
+	let prevFirstTs: number | undefined
+	let prevLength = 0
+	return (rows) => {
+		const firstTs = rows.length > 0 ? (Array.isArray(rows[0]) ? rows[0][0]?.ts : rows[0]?.ts) : undefined
+		const stillHasPrevHead =
+			prevFirstTs !== undefined && rows.some((row) => (Array.isArray(row) ? row[0]?.ts : row?.ts) === prevFirstTs)
+		const isFrontGrowth = rows.length > prevLength && firstTs !== prevFirstTs && prevFirstTs !== undefined && stillHasPrevHead
+		prevFirstTs = firstTs
+		prevLength = rows.length
+		return isFrontGrowth
+	}
+}

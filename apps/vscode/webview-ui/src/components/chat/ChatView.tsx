@@ -61,6 +61,8 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		checkpointRestoreInput,
 		queuedPrompts,
 		turnState,
+		transcriptWindow,
+		transcriptMetrics,
 	} = useExtensionState()
 	const isProdHostedApp = userInfo?.apiBaseUrl === "https://app.cline.bot"
 	const shouldShowQuickWins = isProdHostedApp && (!taskHistory || taskHistory.length < QUICK_WINS_HISTORY_THRESHOLD)
@@ -108,7 +110,16 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		return combineApiRequests(combineCommandSequences(withHooks))
 	}, [displayMessages, hooksEnabled])
 	// has to be after api_req_finished are all reduced into api_req_started messages
-	const apiMetrics = useMemo(() => getApiMetrics(modifiedMessages), [modifiedMessages])
+	// When the transcript is windowed (long-task optimization), the replica holds only
+	// the tail + whatever older pages were paged in, so locally computed metrics
+	// undercount. Prefer the extension-side full-conversation totals until every
+	// page has been loaded, then fall back to the local computation (equivalent,
+	// but fresher while streaming).
+	const isTranscriptWindowed = !!transcriptWindow && messages.length < transcriptWindow.total && messages.length > 0
+	const apiMetrics = useMemo(
+		() => (isTranscriptWindowed && transcriptMetrics ? transcriptMetrics : getApiMetrics(modifiedMessages)),
+		[isTranscriptWindowed, transcriptMetrics, modifiedMessages],
+	)
 
 	const lastApiReqTotalTokens = useMemo(() => getLastApiReqTotalTokens(modifiedMessages) || undefined, [modifiedMessages])
 	const lastAppliedCheckpointRestoreSessionId = useRef<string | undefined>(checkpointRestoreInput?.sessionId)

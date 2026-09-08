@@ -1,6 +1,13 @@
 import type { ClineMessage } from "@shared/ExtensionMessage"
 import { describe, expect, it } from "vitest"
-import { applyMessage, applyStateSnapshot, applyTurnState, createReplicaState, type ReplicaState } from "./messageReducer"
+import {
+	applyMessage,
+	applyStateSnapshot,
+	applyTurnState,
+	createReplicaState,
+	prependMessages,
+	type ReplicaState,
+} from "./messageReducer"
 
 function msg(ts: number, seq: number, epoch: number, partial = false, text = `m${ts}`): ClineMessage {
 	return { ts, type: "say", say: "text", text, partial, seq, epoch }
@@ -232,6 +239,57 @@ describe("messageReducer — deterministic", () => {
 			// The transcript must still contain the real conversation, not just the stray row.
 			expect(tsList(s)).toContain(1)
 			expect(tsList(s)).toContain(2)
+		})
+	})
+
+	describe("messageReducer — prependMessages (transcript windowing / infinite scroll)", () => {
+		it("prepends a page of older messages at the FRONT, keeping the tail intact", () => {
+			let s = createReplicaState()
+			s = applyStateSnapshot(s, [msg(10, 1, 1, false, "tail-a"), msg(11, 2, 1, false, "tail-b")], 1, 1)
+			s = prependMessages(s, [msg(8, 0, 1, false, "old-a"), msg(9, 0, 1, false, "old-b")])
+			expect(tsList(s)).toEqual([8, 9, 10, 11])
+		})
+
+		it("insertion is POSITIONAL, not ts-sorted (re-minted ids can outrank the tail)", () => {
+			// The inactive-task fallback re-mints ts ids per open, so a page of logically
+			// OLDER messages can carry numerically larger ids than the tail the replica
+			// already holds. Prepending must still put the page at the front.
+			let s = createReplicaState()
+			s = applyStateSnapshot(s, [msg(100, 1, 1, false, "tail")], 1, 1)
+			s = prependMessages(s, [msg(900, 0, 1, false, "logically-older")])
+			expect(texts(s)).toEqual(["logically-older", "tail"])
+		})
+
+		it("dedupes by ts against what the replica already holds (no duplicate rows)", () => {
+			let s = createReplicaState()
+			s = applyStateSnapshot(s, [msg(1, 1, 1, false, "a"), msg(2, 2, 1, false, "b"), msg(3, 3, 1, false, "c")], 1, 1)
+			// Overlapping page: b already present; only a is new.
+			s = prependMessages(s, [msg(1, 0, 1, false, "a"), msg(2, 0, 1, false, "b")])
+			expect(tsList(s)).toEqual([1, 2, 3])
+			// The existing copy wins (page rows carry lower/absent seq).
+			expect(s.messages[1].text).toBe("b")
+		})
+
+		it("an all-duplicate page is a no-op (same state identity semantics, no truncation)", () => {
+			let s = createReplicaState()
+			s = applyStateSnapshot(s, [msg(1, 1, 1), msg(2, 2, 1)], 1, 1)
+			const s2 = prependMessages(s, [msg(1, 5, 1), msg(2, 6, 1)])
+			expect(tsList(s2)).toEqual([1, 2])
+		})
+
+		it("an empty page is a no-op", () => {
+			let s = createReplicaState()
+			s = applyStateSnapshot(s, [msg(1, 1, 1)], 1, 1)
+			expect(prependMessages(s, [])).toBe(s)
+		})
+
+		it("prepended ts ids are registered in seqByTs so live snapshots merge instead of duplicating", () => {
+			let s = createReplicaState()
+			s = applyStateSnapshot(s, [msg(10, 2, 1, false, "tail")], 1, 1)
+			s = prependMessages(s, [msg(9, 1, 1, false, "old")])
+			// A later same-epoch snapshot containing BOTH ids must merge by ts, not append a copy of 9.
+			s = applyStateSnapshot(s, [msg(9, 1, 1, false, "old"), msg(10, 2, 1, false, "tail")], 1, 2)
+			expect(tsList(s)).toEqual([9, 10])
 		})
 	})
 })

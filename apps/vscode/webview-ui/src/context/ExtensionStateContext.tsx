@@ -1,6 +1,6 @@
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
-import { DEFAULT_PLATFORM, type ExtensionState } from "@shared/ExtensionMessage"
+import { type ClineMessage, DEFAULT_PLATFORM, type ExtensionState } from "@shared/ExtensionMessage"
 import { DEFAULT_MCP_DISPLAY_MODE } from "@shared/McpDisplayMode"
 import type { UserInfo } from "@shared/proto/cline/account"
 import { EmptyRequest } from "@shared/proto/cline/common"
@@ -25,6 +25,7 @@ import {
 	type ReplicaState,
 	applyMessage as reducerApplyMessage,
 	applyStateSnapshot as reducerApplyStateSnapshot,
+	prependMessages as reducerPrependMessages,
 } from "../components/chat/chat-view/messageReducer"
 import { McpServiceClient, ModelsServiceClient, StateServiceClient, UiServiceClient } from "../services/grpc-client"
 
@@ -81,6 +82,13 @@ export interface ExtensionStateContextType extends ExtensionState {
 	// Setters
 	setShowAnnouncement: (value: boolean) => void
 	setShouldShowAnnouncement: (value: boolean) => void
+	/**
+	 * Prepend one page of OLDER transcript messages fetched via
+	 * TaskService.getTranscriptPage (infinite scroll over a windowed
+	 * transcript). Updates clineMessages through the replica reducer and
+	 * advances transcriptWindow accordingly.
+	 */
+	prependTranscriptMessages: (page: ClineMessage[], hasMore: boolean, total: number) => void
 	setMcpServers: (value: McpServer[]) => void
 	setRequestyModels: (value: Record<string, ModelInfo>) => void
 	setGroqModels: (value: Record<string, ModelInfo>) => void
@@ -467,6 +475,17 @@ export const ExtensionStateContextProvider: React.FC<{
 								stateData.turnState,
 							)
 							stateData.clineMessages = replicaRef.current.messages
+							// Re-derive transcriptWindow against the REPLICA (not the raw
+							// snapshot): the extension always stamps hasMore from its own
+							// perspective (it doesn't know which older pages the webview has
+							// already prepended). After a same-epoch merge the replica may
+							// already hold everything, and after a newer-epoch replace it
+							// holds exactly the delivered window.
+							if (stateData.transcriptWindow) {
+								const replicaCount = replicaRef.current.messages.length
+								const total = Math.max(stateData.transcriptWindow.total, replicaCount)
+								stateData.transcriptWindow = { total, hasMore: replicaCount < total }
+							}
 							// Use the seq-gated turnState from the replica, NOT the raw snapshot's, so a
 							// late/stale snapshot carrying an older phase (e.g. "idle") cannot revert a
 							// newer phase (e.g. "streaming") and hide the Cancel button. Falls back to
@@ -870,6 +889,32 @@ export const ExtensionStateContextProvider: React.FC<{
 		refreshLiteLlmModels,
 	])
 
+	// Transcript windowing: merge one page of older messages (ascending) into the
+	// replica and advance transcriptWindow. Called by useTranscriptPagination
+	// after a successful TaskService.getTranscriptPage RPC.
+	const prependTranscriptMessages = useCallback((page: ClineMessage[], hasMore: boolean, total: number) => {
+		setState((prevState) => {
+			const before = replicaRef.current
+			replicaRef.current = reducerPrependMessages(before, page)
+			if (replicaRef.current === before) {
+				// Nothing new survived dedup; still record the server's hasMore/total
+				// (e.g. a re-fetch of an already-loaded page).
+				if (prevState.transcriptWindow?.total === total && prevState.transcriptWindow.hasMore === hasMore) {
+					return prevState
+				}
+				return {
+					...prevState,
+					transcriptWindow: { total, hasMore },
+				}
+			}
+			return {
+				...prevState,
+				clineMessages: replicaRef.current.messages,
+				transcriptWindow: { total, hasMore },
+			}
+		})
+	}, [])
+
 	const contextValue: ExtensionStateContextType = {
 		...state,
 		didHydrateState,
@@ -1007,6 +1052,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		refreshHicapModels,
 		refreshLiteLlmModels,
 		onRelinquishControl,
+		prependTranscriptMessages,
 		setUserInfo: (userInfo?: UserInfo) => setState((prevState) => ({ ...prevState, userInfo })),
 		expandTaskHeader,
 		setExpandTaskHeader,

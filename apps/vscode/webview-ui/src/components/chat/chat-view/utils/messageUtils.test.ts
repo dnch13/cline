@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
 	applyActiveRecoveryHold,
 	canRestoreWorkspaceFromMessage,
+	createFrontGrowthDetector,
 	filterVisibleMessages,
 	findActiveRecoveryDecoration,
 	groupLowStakesTools,
@@ -433,5 +434,53 @@ describe("groupLowStakesTools", () => {
 		expect(grouped).toHaveLength(2)
 		expect(grouped[0]).toMatchObject({ type: "say", say: "reasoning", text: "Planning next read" })
 		expect(isToolGroup(grouped[1])).toBe(true)
+	})
+})
+
+describe("createFrontGrowthDetector", () => {
+	it("detects a prepended older page (front growth) with fresh array identities", () => {
+		const detect = createFrontGrowthDetector()
+		// Grouped lists are rebuilt with new array/object identities on every recompute —
+		// detection must work by ts, not object identity.
+		const before = [[createTextMessage(10, "tail-a"), createTextMessage(11, "tail-b")]]
+		const after = [createTextMessage(9, "old"), ...before.map((g) => [...g])]
+		expect(detect(before)).toBe(false) // first observation is never growth
+		expect(detect(after)).toBe(true) // longer + head changed + previous head still present
+	})
+
+	it("tail growth (streaming append) is NOT front growth", () => {
+		const detect = createFrontGrowthDetector()
+		const before = [[createTextMessage(10, "a")]]
+		const after = [[createTextMessage(10, "a")], [createTextMessage(11, "b")]]
+		detect(before)
+		expect(detect(after)).toBe(false) // head ts unchanged
+	})
+
+	it("wholesale replace (task switch) is NOT front growth even though the head changed", () => {
+		const detect = createFrontGrowthDetector()
+		const before = [[createTextMessage(10, "old-task")]]
+		const after = [createTextMessage(20, "new-task"), createTextMessage(21, "new-task-2")]
+		detect(before)
+		expect(detect(after)).toBe(false) // previous head (ts 10) is gone -> replace, not prepend
+	})
+
+	it("shrinking lists (rows collapsed/filtered) are never front growth", () => {
+		const detect = createFrontGrowthDetector()
+		const before = [createTextMessage(1, "a"), createTextMessage(2, "b")]
+		const after = [createTextMessage(1, "a")]
+		detect(before)
+		expect(detect(after)).toBe(false)
+	})
+
+	it("empty -> non-empty initial load is not front growth", () => {
+		const detect = createFrontGrowthDetector()
+		detect([])
+		expect(detect([createTextMessage(1, "first")])).toBe(false) // no previous head existed
+	})
+
+	it("ungrouped rows (single ClineMessage entries) are handled identically", () => {
+		const detect = createFrontGrowthDetector()
+		detect([createTextMessage(10, "tail")])
+		expect(detect([createTextMessage(9, "old"), createTextMessage(10, "tail")])).toBe(true)
 	})
 })

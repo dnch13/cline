@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useEvent } from "react-use"
 import { ListRange, VirtuosoHandle } from "react-virtuoso"
 import { ScrollBehavior } from "../types/chatTypes"
+import { createFrontGrowthDetector } from "../utils/messageUtils"
 
 // Height of the sticky user message header (padding + content)
 const STICKY_HEADER_HEIGHT = 32
@@ -296,7 +297,14 @@ export function useScrollBehavior(
 
 	useEffect(() => clearLayoutSettleScrollTimers, [clearLayoutSettleScrollTimers])
 
+	// Front growth (older transcript pages prepended via infinite scroll) must not
+	// trigger bottom-pinning — the user is reading the oldest end of the chat.
+	const detectFrontGrowth = useRef(createFrontGrowthDetector()).current
+
 	useEffect(() => {
+		if (detectFrontGrowth(groupedMessages)) {
+			return
+		}
 		if (!disableAutoScrollRef.current) {
 			scrollToBottomSmooth()
 			setTimeout(() => {
@@ -311,7 +319,7 @@ export function useScrollBehavior(
 			}, 70)
 			// return () => clearTimeout(timer) // dont cleanup since if visibleMessages.length changes it cancels.
 		}
-	}, [groupedMessages.length, scrollToBottomSmooth, scrollToBottomAuto])
+	}, [groupedMessages.length, scrollToBottomSmooth, scrollToBottomAuto, detectFrontGrowth, groupedMessages])
 
 	useEffect(() => {
 		if (pendingScrollToMessage !== null) {

@@ -7,6 +7,7 @@
 import { isModelToolEnabledGlobally, readCompactionStrategyGlobally } from "@cline/core"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
 import type { ExtensionState, Platform } from "@shared/ExtensionMessage"
+import { getApiMetrics } from "@shared/getApiMetrics"
 import { ClineEnv } from "@/config"
 import { ExtensionRegistryInfo } from "@/registry"
 import { BannerService } from "@/services/banner/BannerService"
@@ -15,6 +16,13 @@ import { getDistinctId } from "@/services/logging/distinctId"
 import { getExtensionVariant } from "@/services/telemetry/rollout-metadata"
 import { getLatestAnnouncementId } from "@/utils/announcements"
 import { getClineOnboardingModels } from "../models/getClineOnboardingModels"
+
+/**
+ * Maximum transcript messages included in a state snapshot. Longer transcripts are
+ * delivered tail-first; older pages load on demand via TaskService.getTranscriptPage.
+ * Generous enough that the overwhelming majority of tasks are never windowed.
+ */
+export const TRANSCRIPT_WINDOW_LIMIT = 120
 
 /**
  * Builds the ExtensionState object to push to the webview.
@@ -83,7 +91,29 @@ export async function getStateToPostToWebview(controller: {
 	const currentTaskItem = controller.task?.taskId
 		? (taskHistory || []).find((item: any) => item.id === controller.task?.taskId)
 		: undefined
-	const clineMessages = [...(controller.task?.messageStateHandler?.getClineMessages?.() || [])]
+	const fullClineMessages = [...(controller.task?.messageStateHandler?.getClineMessages?.() || [])]
+	// Long-conversation optimization: deliver only the transcript TAIL to the webview.
+	// Older pages are fetched on demand via TaskService.getTranscriptPage (infinite
+	// scroll). This bounds both the state snapshot size and the initial webview render
+	// for multi-thousand-message tasks. Same-epoch merges never truncate the webview
+	// replica, so this only shapes what a NEW epoch (task open) initially receives.
+	// The full array is kept for metrics below (token/cost totals must reflect the
+	// WHOLE conversation, not the window).
+	const transcriptWindow =
+		fullClineMessages.length > TRANSCRIPT_WINDOW_LIMIT
+			? {
+					total: fullClineMessages.length,
+					hasMore: true,
+				}
+			: undefined
+	const clineMessages = transcriptWindow
+		? fullClineMessages.slice(fullClineMessages.length - TRANSCRIPT_WINDOW_LIMIT)
+		: fullClineMessages
+	// Full-conversation usage totals: computed over the complete transcript whenever
+	// we window, so the task header stays correct even though the replica only holds
+	// the tail. (When un-windowed, the webview's own getApiMetrics over clineMessages
+	// is equivalent, so we skip the redundant field.)
+	const transcriptMetrics = transcriptWindow ? getApiMetrics(fullClineMessages) : undefined
 	const checkpointRestoreInput = controller.checkpointRestoreInput
 
 	const processedTaskHistory = (taskHistory || [])
@@ -116,6 +146,8 @@ export async function getStateToPostToWebview(controller: {
 		apiConfiguration,
 		currentTaskItem,
 		clineMessages,
+		transcriptWindow,
+		transcriptMetrics,
 		checkpointRestoreInput,
 		autoApprovalSettings,
 		browserSettings,

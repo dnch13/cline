@@ -36,6 +36,32 @@ export type Platform = "aix" | "darwin" | "freebsd" | "linux" | "openbsd" | "sun
 export const DEFAULT_PLATFORM = "unknown"
 
 export const COMMAND_CANCEL_TOKEN = "__cline_command_cancel__"
+
+/**
+ * Metadata about a windowed transcript snapshot: the extension sent only the
+ * tail of clineMessages and older pages are fetchable on demand (infinite
+ * scroll). See ExtensionState.transcriptWindow.
+ */
+export interface TranscriptWindow {
+	/** Full conversation length extension-side (may exceed clineMessages.length). */
+	total: number
+	/** True when older messages exist that the webview has not loaded yet. */
+	hasMore: boolean
+}
+
+/**
+ * Full-conversation API usage totals for a windowed transcript snapshot. Shape
+ * mirrors the totals of getApiMetrics() so the task header can render them
+ * identically. See ExtensionState.transcriptMetrics.
+ */
+export interface TranscriptMetrics {
+	totalTokensIn: number
+	totalTokensOut: number
+	totalCacheWrites?: number
+	totalCacheReads?: number
+	totalCost: number
+}
+
 export interface ExtensionState {
 	isNewUser: boolean
 	welcomeViewCompleted: boolean
@@ -77,6 +103,23 @@ export interface ExtensionState {
 	 * Optional for classic/legacy.
 	 */
 	epoch?: number
+	/**
+	 * Transcript windowing metadata. Present when the extension sent only the TAIL of
+	 * clineMessages in this snapshot (long-task optimization): `total` is the full
+	 * conversation length extension-side, and `hasMore` means older messages exist that
+	 * the webview can fetch page-by-page via the TaskService.getTranscriptPage RPC
+	 * (infinite scroll). Same-epoch snapshot merges never truncate, so windowing only
+	 * affects what a NEW epoch (task open) initially delivers. Absent for
+	 * classic/legacy state and for un-windowed snapshots (whole transcript included).
+	 */
+	transcriptWindow?: TranscriptWindow
+	/**
+	 * Full-conversation API usage totals (tokens/cost) computed extension-side over the
+	 * COMPLETE transcript. Present together with transcriptWindow so the task header
+	 * stays correct even while the webview replica holds only a window of the messages.
+	 * When the replica holds everything, the webview's own getApiMetrics is equivalent.
+	 */
+	transcriptMetrics?: TranscriptMetrics
 	currentTaskItem?: HistoryItem
 	mcpMarketplaceEnabled?: boolean
 	mcpDisplayMode: McpDisplayMode
