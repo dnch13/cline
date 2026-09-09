@@ -140,7 +140,7 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 					.history-meta-stack {
 						display: flex;
 						flex-direction: column;
-						align-items: center;
+						align-items: flex-end;
 						gap: 4px;
 						flex-shrink: 0;
 					}
