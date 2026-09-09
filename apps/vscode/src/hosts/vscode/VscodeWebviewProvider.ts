@@ -15,11 +15,28 @@ https://github.com/KumarVariable/vscode-extension-sidebar-html/blob/master/src/c
 */
 
 /**
- * Returns the workspace-aware title for the Cline view, e.g. "Cline - my-repo".
- * Falls back to just "Cline" when no folder is open.
+ * Returns the name of the primary workspace folder, or the workspace name for
+ * multi-root workspaces. Returns undefined when no folder is open.
+ */
+function getWorkspaceFolderName(): string | undefined {
+	return vscode.workspace.workspaceFolders?.[0]?.name ?? vscode.workspace.name
+}
+
+/**
+ * Title for the sidebar view. VS Code renders the header as
+ * "<container>: <view title>" (e.g. "CLINE: my-repo"), so this is just the
+ * workspace folder name to avoid duplication. Falls back to "Cline".
+ */
+function getSidebarViewTitle(): string {
+	return getWorkspaceFolderName() ?? "Cline"
+}
+
+/**
+ * Title for the webview document (<title>), which stands alone without the
+ * container prefix, e.g. "Cline - my-repo". Falls back to just "Cline".
  */
 function getWorkspaceAwareTitle(): string {
-	const folderName = vscode.workspace.workspaceFolders?.[0]?.name ?? vscode.workspace.name
+	const folderName = getWorkspaceFolderName()
 	return folderName ? `Cline - ${folderName}` : "Cline"
 }
 
@@ -72,15 +89,16 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		this.disposeView()
 		this.webview = webviewView
 
-		// Show "Cline - <workspace folder>" as the view title so it's clear which
-		// project this Cline panel belongs to.
-		webviewView.title = this.getWebviewTitle()
+		// VS Code prefixes the container name in the sidebar header
+		// ("CLINE: <view title>"), so use just the repository name here to get
+		// "CLINE: my-repo" instead of "CLINE: Cline - my-repo".
+		webviewView.title = getSidebarViewTitle()
 
 		// Keep the title in sync when workspace folders are added/removed/renamed.
 		vscode.workspace.onDidChangeWorkspaceFolders(
 			() => {
 				if (this.webview) {
-					this.webview.title = this.getWebviewTitle()
+					this.webview.title = getSidebarViewTitle()
 				}
 			},
 			null,
