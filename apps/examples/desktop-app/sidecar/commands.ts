@@ -15,7 +15,9 @@ import type {
 import {
 	addLocalProvider,
 	ClineAccountService,
+	type ClineAccountUser,
 	captureAuthRefreshSoftFailure,
+	clearAccountTelemetryIdentity,
 	createConfiguredStreamingTranscriptionSession,
 	createUserInstructionConfigService,
 	ensureCustomProvidersLoaded,
@@ -23,14 +25,17 @@ import {
 	fetchClineRecommendedModels,
 	getCoreBuiltinToolCatalog,
 	getLocalProviderModels,
+	identifyAccount,
 	listHookConfigFiles,
 	listLocalProviders,
 	normalizeOAuthProvider,
 	ProviderSettingsManager,
 	parseMcpServerRegistration,
+	persistClineAccountTelemetryIdentity,
 	probeMcpServerConnection,
 	RuntimeOAuthTokenManager,
 	readGlobalSettings,
+	resolveClineAccountTelemetryIdentity,
 	resolveLocalClineAuthToken,
 	resolveMcpServerRegistration,
 	resolveSessionBackend,
@@ -66,6 +71,7 @@ import { readFileSyncStrippingUtf8Bom } from "@cline/shared/node";
 import packageJson from "../package.json";
 import { CLINE_ACCOUNT_NOT_AUTHENTICATED_RESULT } from "../webview/lib/cline-account-state";
 import { MAX_RECORDED_AUDIO_BYTES } from "../webview/lib/voice-input-limits";
+import { resolveDesktopTelemetryUser } from "./client-context";
 import {
 	listClineGitHubRepositories,
 	listClineIntegrations,
@@ -310,14 +316,23 @@ function removePathIfExists(
 // refreshes would invalidate each other.
 let clineOAuthTokenManager: RuntimeOAuthTokenManager | undefined;
 
-function syncFeatureFlagsAccountFromResult(
+function syncAccountContextFromResult(
 	ctx: SidecarContext,
+	manager: ProviderSettingsManager,
 	operation: string,
 	result: unknown,
 ): void {
 	if (operation === "fetchMe") {
-		const user = result as { id?: string; email?: string } | undefined;
+		const user = result as ClineAccountUser | undefined;
 		if (user?.id) {
+			const identity = resolveClineAccountTelemetryIdentity(user);
+			ctx.telemetryUser = resolveDesktopTelemetryUser({
+				accountId: identity.id,
+				email: identity.email,
+				organizationId: identity.organizationId,
+			});
+			identifyAccount(ctx.telemetry, identity);
+			persistClineAccountTelemetryIdentity(manager, identity);
 			void identifyDesktopFeatureFlagsAccount(
 				{ id: user.id, email: user.email },
 				{ logger: ctx.logger, telemetry: ctx.telemetry },
@@ -327,12 +342,39 @@ function syncFeatureFlagsAccountFromResult(
 	}
 }
 
-function syncFeatureFlagsAccountFromSettings(
+function syncAccountContextFromSettings(
 	ctx: SidecarContext,
 	manager: ProviderSettingsManager,
 ): void {
+	const auth = manager.getProviderSettings("cline")?.auth;
+	const accountId = auth?.accountId?.trim();
+	if (!auth || !accountId) {
+		syncSignedOutAccountContext(ctx);
+		return;
+	}
+	ctx.telemetryUser = resolveDesktopTelemetryUser({
+		accountId,
+		organizationId: auth.organizationId,
+	});
+	identifyAccount(ctx.telemetry, {
+		id: accountId,
+		provider: "cline",
+		organizationId: auth.organizationId,
+		organizationName: auth.organizationName,
+		memberId: auth.memberId,
+	});
 	void identifyDesktopFeatureFlagsAccount(
-		{ id: manager.getProviderSettings("cline")?.auth?.accountId },
+		{ id: accountId },
+		{ logger: ctx.logger, telemetry: ctx.telemetry },
+	);
+}
+
+function syncSignedOutAccountContext(ctx: SidecarContext): void {
+	const telemetryUser = resolveDesktopTelemetryUser();
+	ctx.telemetryUser = telemetryUser;
+	clearAccountTelemetryIdentity(ctx.telemetry, telemetryUser.distinctId);
+	void identifyDesktopFeatureFlagsAccount(
+		{},
 		{ logger: ctx.logger, telemetry: ctx.telemetry },
 	);
 }
@@ -1036,6 +1078,34 @@ async function listUserInstructionConfigs(
 	} finally {
 		userInstructionService.stop();
 	}
+	const knownSkillPaths = new Set(
+		skills.flatMap((skill) => {
+			if (!skill || typeof skill !== "object") return [];
+			const path = (skill as JsonRecord).path;
+			return typeof path === "string" ? [path] : [];
+		}),
+	);
+	for (const skill of hubSettings.skills) {
+		if (
+			skill.agentPlugin !== true ||
+			skill.enabled === false ||
+			knownSkillPaths.has(skill.path)
+		) {
+			continue;
+		}
+		skills.push({
+			id: skill.id,
+			name: skill.name,
+			description: skill.description,
+			instructions: "",
+			path: skill.path,
+			enabled: true,
+			source: skill.source,
+			agentPlugin: true,
+			pluginName: skill.pluginName,
+		});
+		knownSkillPaths.add(skill.path);
+	}
 
 	const disabledTools = new Set(readGlobalSettings().disabledTools ?? []);
 	// Pin spawn/teams availability so this listing matches the hub's
@@ -1055,9 +1125,15 @@ async function listUserInstructionConfigs(
 		runtimeCommands,
 		agents: loadAgents(),
 		plugins: hubSettings.plugins.map((plugin) => ({
+			id: plugin.id,
 			name: plugin.name,
 			path: plugin.path,
 			enabled: plugin.enabled !== false,
+			source: plugin.source,
+			toggleable: plugin.toggleable === true,
+			agentPlugin: plugin.agentPlugin === true,
+			description: plugin.description,
+			loadError: plugin.loadError,
 			contributions: plugin.contributions,
 		})),
 		tools: [
@@ -1797,10 +1873,7 @@ export async function handleCommand(
 			// an expired or server-revoked token. Explicit sign-out is handled
 			// at its source in `save_provider_settings`; this catches the rest
 			// so a stale account never keeps serving its rollout cohort.
-			void identifyDesktopFeatureFlagsAccount(
-				{},
-				{ logger: ctx.logger, telemetry: ctx.telemetry },
-			);
+			syncSignedOutAccountContext(ctx);
 			return CLINE_ACCOUNT_NOT_AUTHENTICATED_RESULT;
 		}
 		const settings = manager.getProviderSettings("cline");
@@ -1813,7 +1886,7 @@ export async function handleCommand(
 			args as ClineAccountActionRequest,
 			accountService,
 		);
-		syncFeatureFlagsAccountFromResult(ctx, operation, result);
+		syncAccountContextFromResult(ctx, manager, operation, result);
 		return result;
 	}
 
@@ -2016,7 +2089,7 @@ export async function handleCommand(
 		// authoritative signal — it fires the moment credentials are cleared
 		// rather than waiting for the next account fetch.
 		if (saved.providerId === "cline" || saved.providerId === "cline-pass") {
-			syncFeatureFlagsAccountFromSettings(ctx, manager);
+			syncAccountContextFromSettings(ctx, manager);
 		}
 		return saved;
 	}
@@ -2084,7 +2157,16 @@ export async function handleCommand(
 					);
 				});
 			},
-			{ owner: options?.connection },
+			{
+				owner: options?.connection,
+				// Push the device sign-in confirmation code so the webview can
+				// show it while the user confirms it in the browser.
+				onUserCode: (userCode) =>
+					broadcastEvent(ctx, "provider_oauth_user_code", {
+						provider: providerId,
+						userCode,
+					}),
+			},
 		);
 	}
 	if (command === "cancel_provider_oauth_login") {

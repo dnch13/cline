@@ -1,5 +1,36 @@
 # Cline Desktop Changelog
 
+## 0.0.24
+
+- Fixed the live chat stream doubling text and dropping messages mid-turn. The sidecar had two pipes into the same emitter — the core session subscription and the Hub observer — and a session that streams without a local send first (a run already in flight when you open the task, a resumed run, a scheduled run) got every delta emitted twice. The core pipe is now the primary and the observer stands down while it is serving, for the whole busy run rather than a 5s window, so long commands, slow first tokens, and unanswered tool approvals no longer let a duplicate through. Separately, when the sidecar was replaced under a live webview (crash-respawn, Hub drain-and-replace, stale-sidecar swap) its stream counter restarted at 1 and the webview silently discarded everything until the new process counted past the old run — this dropped your own message bubbles and tool rows, not just assistant text, which is why rows appeared to vanish mid-turn and come back afterwards
+- Cline no longer stops silently mid-task when a model gets stuck repeating itself. The loop detector stops a run after 5 identical tool calls and the mistake tracker after 6 consecutive failures, but the desktop never registered a decision callback, so the run just ended and the composer went idle with no message. You are now asked how to continue — "Try a different approach" or "Stop this run" — and the guidance is steered into the running turn so the model knows why it was paused instead of repeating the same call
+- The `editor` tool's error message now names the file, says whether `old_text` was null or omitted, and states how to recover. Models that fill optional parameters with null (seen with kimi-k3) hit a terse "old_text is required" and re-sent the identical call until the loop detector stopped the run
+- Fixed your Cline Pass model selection being replaced when you start a new chat. Catalogs are discovery data, not validation — the bundled catalog can omit live Cline Pass models and refreshes can return partial lists, so a model missing from the catalog was treated as invalid and silently swapped for a default
+- Cline Desktop now has a custom title bar on Windows, with caption controls that follow the compact title-bar height in narrow windows and stay above overlays. The Windows taskbar icon was also updated
+- Token counts and costs now fill in for every session you can see. The sessions view only ever hydrated the four most recent rows, so every other row showed "-" and paging never asked for more; the visible page is now hydrated on demand, with reads capped and re-run when a session's status changes underneath them
+- Sessions imported from Claude Code, Codex, and opencode now say so in the chat, and their foreign history is summarized on the first resumed turn. Imported transcripts keep the source tool's own tool names and schemas, which a model continuing them may try to call — the summary runs once, the original transcript stays intact, and the "Thinking..." indicator reads "Summarizing the imported <tool> history..." while it happens
+- Fixed session history rendering empty when one session had many subagent or team-task children. Child rows always sort after the root that spawned them, so a single busy session could hide itself and every older session from the sidebar with no way to load more
+- Checkpoints no longer re-hash every untracked file before each message. Checkpoint creation rebuilt a throwaway git index each turn, so multi-GB untracked data blocked every message for seconds to minutes (~90s in one report on a cloud-synced Windows workspace). One snapshot index is now kept per session, so from the second turn the cost is roughly git process overhead. Snapshot contents are byte-identical to before
+- Commands that background a child process (`cmd &`, `nohup`, and the same from Git Bash) no longer hang until the timeout. The inherited stdio pipes stay open after the shell exits, so the completion event never arrived even though the command was done; these now settle with the real exit code and a note that background output is no longer captured
+- Typing an `@` mention from your home directory no longer indexes your entire home folder. That could take memory into the gigabytes and get the process killed; the home directory and filesystem root are now skipped entirely
+- Web search is now enabled by default outside YOLO mode, and tool settings fail closed if they cannot be loaded
+- Claude Code no longer asks for an API key it never reads. It authenticates from the local `claude` CLI's own credential store, but was reported as an API-key provider, so a keyless entry was refused and the workaround was to save a dummy key
+- Pasted credentials with invisible characters no longer persist corrupted. A BOM or zero-width character carried in from a copy-paste produced 401s indistinguishable from a wrong key; credential fields are now stripped of control and format characters on save
+- The model picker keeps section headers visible while you search. Cline Pass lists the same model in both the Subscribed and Free tiers, so flattening the sections during search produced two identical-looking rows
+- `apply_patch` "Add File" now refuses to overwrite an existing file instead of silently replacing it
+- Fixed session import paths resolving incorrectly on Windows
+- The desktop backend now starts off the command path, so startup no longer blocks the UI
+- The SDK can now connect to authenticated remote Hubs
+
+## 0.0.23
+
+- Agent Plugins are now discovered and run by the shared Hub. Packages under `~/.agents/plugins` are validated from their `plugin.json`, their valid Agent Skills become available to the agent, and their stdio / Streamable HTTP / SSE MCP servers start automatically. Settings → Customize lists Agent Plugins separately from Cline Plugins, with each plugin's description, badge, and contributed tools, and enable/disable is Hub-managed per plugin. Workspace `.agents/plugins` directories are intentionally ignored
+- The "Cline Hub was updated" dialog no longer appears on every launch and reconnect. The app no longer prompts about a Hub running the same core version it does — a desktop and CLI release cut from different commits bundle the same core but never share a build fingerprint, so anyone with both installed got a dialog whose "Update and restart" looped on "no app update available". The build-mismatch dialog now also waits until an app update is actually staged, and "Later" sticks across session switches, reloads, and relaunches instead of resurfacing every time. A Hub the app genuinely cannot talk to still warns every time
+- Signing in now shows the device confirmation code in the app while you wait on the browser, so you can match it against the code the browser asks you to confirm — in onboarding, Account settings, and the provider list
+- Voice input failures caused by provider setup — missing credentials, transcription config — now take you straight to voice settings instead of a toast you cannot act on. Genuine microphone permission failures still toast, with a clearer message
+- Fixed the scheduled-task report vanishing when a finished run's step collapsed
+- Fixed one wedged MCP server blocking the rest from shutting down, leaking their processes
+
 ## 0.0.22
 
 - Import your history from Claude Code, Codex, and opencode. An Import button in the Sessions header (and a row in Settings → General) scans your local stores from all three tools and turns the conversations you pick into fully resumable Cline sessions. Sessions are grouped per tool with select-all and a search across title, folder, and first prompt; already-imported ones are shown as such so re-opening the dialog is safe. Imported sessions resume on your configured provider and model, not the source tool's. If you have history from any of these tools, onboarding now offers the import as a step
@@ -27,6 +58,7 @@
 
 ## 0.0.20
 
+- Customize now separates Cline Plugins from Agent Plugins discovered by the Hub. Agent Plugin switches use Hub-managed enablement, contributed skills appear in the Skills inventory, and connected desktop views refresh when Hub settings change
 - Cline Desktop now ships on Windows: releases include a code-signed x64 installer, and installed apps auto-update on the same feed macOS does
 - Windows shell fixes: background processes (the sidecar, git) no longer pop visible console windows; updates now download in the background and install when you restart the app; the MCP settings path falls back to `USERPROFILE` when `HOME` is unset
 - Tool results that return images — screenshots from browser or MCP tools — now render as inline images you can click to expand, with a carousel for stepping through multiple images, instead of raw base64 text

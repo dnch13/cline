@@ -348,6 +348,7 @@ function ChatInputBarImpl({
 	onSteerPromptInQueue,
 	onEditPromptInQueue,
 	onRemovePromptInQueue,
+	onOpenVoiceInputSettings,
 	summary,
 }: ChatInputBarProps) {
 	const {
@@ -752,24 +753,38 @@ function ChatInputBarImpl({
 		[transcriptionTarget],
 	);
 
-	const handleSpeechInputError = useCallback((error: unknown) => {
-		const message =
-			error instanceof Error
-				? error.message
-				: "Check microphone permission and audio provider settings.";
-		writeDesktopDebugLog({
-			scope: "voice-input",
-			level: "error",
-			message: "Speech input failed in the webview",
-			timestamp: new Date().toISOString(),
-			metadata: { failure: message },
-		});
-		toast({
-			variant: "destructive",
-			title: "Speech input failed",
-			description: message,
-		});
-	}, []);
+	const handleSpeechInputError = useCallback(
+		(error: unknown) => {
+			// Microphone failures surface as DOMExceptions (getUserMedia) or
+			// capture-layer events; provider failures (credentials, transcription
+			// setup) as plain Errors, and are fixed in Settings → Voice.
+			const isMicrophoneError =
+				error instanceof DOMException || error instanceof Event;
+			const message =
+				error instanceof Error
+					? error.message
+					: "Check microphone permission and audio provider settings.";
+			writeDesktopDebugLog({
+				scope: "voice-input",
+				level: "error",
+				message: "Speech input failed in the webview",
+				timestamp: new Date().toISOString(),
+				metadata: { failure: message },
+			});
+			if (!isMicrophoneError && onOpenVoiceInputSettings) {
+				onOpenVoiceInputSettings();
+				return;
+			}
+			toast({
+				variant: "destructive",
+				title: "Speech input failed",
+				description: isMicrophoneError
+					? "Check the microphone permission for Cline and try again."
+					: message,
+			});
+		},
+		[onOpenVoiceInputSettings],
+	);
 
 	const effortIndex = useMemo(
 		() => resolveEffortIndex(thinking, reasoningEffort),
@@ -1603,21 +1618,29 @@ const ModelSelector = memo(function ModelSelector({
 		[modelPicker],
 	);
 	const resolvedModel = useMemo(() => {
-		if (modelsForProvider.length === 0) {
-			return "";
-		}
 		const rememberedModel =
 			lastSelection.lastModelByProvider[resolvedProvider] ??
-			lastSelection.lastModelByProvider[rememberedLastProvider];
-		// An explicitly configured model stays active even when the picker's
-		// offer hides it (the picker preserves it as a visible option below);
-		// remembered and default selections are our own bookkeeping, so they
-		// must resolve to a visible option — otherwise a stale remembered id
-		// gets silently resurrected into a selection the picker cannot show.
-		if (model && modelsForProvider.includes(model)) {
+			(normalizeProviderId(rememberedLastProvider) === resolvedProvider
+				? lastSelection.lastModelByProvider[rememberedLastProvider]
+				: undefined);
+		// Catalogs are discovery data, not validation: the bundled catalog can
+		// omit live ClinePass models, and refreshes can return partial lists.
+		// Keep the configured model for the current provider even if absent;
+		// otherwise loading the catalog silently changes the session's model.
+		if (
+			model &&
+			(normalizedProvider === resolvedProvider ||
+				modelsForProvider.includes(model))
+		) {
 			return model;
 		}
-		if (rememberedModel && pickerModelIds.has(rememberedModel)) {
+		// Missing remembered models may also be live-only. Models present in
+		// the catalog but deliberately hidden from the offer still fall back.
+		if (
+			rememberedModel &&
+			(pickerModelIds.has(rememberedModel) ||
+				!modelsForProvider.includes(rememberedModel))
+		) {
 			return rememberedModel;
 		}
 		return (
@@ -1629,6 +1652,7 @@ const ModelSelector = memo(function ModelSelector({
 		lastSelection.lastModelByProvider,
 		model,
 		modelsForProvider,
+		normalizedProvider,
 		pickerModelIds,
 		rememberedLastProvider,
 		resolvedProvider,
@@ -1636,8 +1660,8 @@ const ModelSelector = memo(function ModelSelector({
 	// The picker can intentionally hide catalog models (the ClinePass offer
 	// is exactly its subscribed/free tiers), but the active model must stay
 	// visible and selectable — e.g. a hydrated session configured with a
-	// model outside the current offer. Surface it under its own section
-	// rather than selecting a value that does not exist in the list.
+	// model outside the current offer or missing from the catalog. Surface it
+	// under its own section so the selected value always exists in the list.
 	const visibleModelPicker = useMemo((): ModelPickerData => {
 		if (!resolvedModel || pickerModelIds.has(resolvedModel)) {
 			return modelPicker;
@@ -1865,14 +1889,15 @@ const ModelSelector = memo(function ModelSelector({
 			onProviderChange(value);
 			const rememberedModel = lastSelection.lastModelByProvider[value];
 			const providerModelIds = visibleProviderModels[value] ?? [];
-			// Validate against the target provider's visible picker options,
-			// not its full catalog: a remembered model the picker hides (e.g.
-			// outside the ClinePass offer) must not become the selection.
+			// Preserve live-only remembered models missing from the bundled
+			// catalog. Only fall back when a known model is hidden by the offer.
 			const providerOptionIds = new Set(
 				pickerDataForProvider(value).options.map((option) => option.value),
 			);
 			const nextModel =
-				rememberedModel && providerOptionIds.has(rememberedModel)
+				rememberedModel &&
+				(providerOptionIds.has(rememberedModel) ||
+					!providerModelIds.includes(rememberedModel))
 					? rememberedModel
 					: (providerModelIds.find((id) => providerOptionIds.has(id)) ??
 						providerModelIds[0]);
@@ -1930,7 +1955,7 @@ const ModelSelector = memo(function ModelSelector({
 		<SearchCombobox
 			ariaLabel="Model"
 			className={triggerClassName}
-			disabled={isBusy || modelsForProvider.length === 0}
+			disabled={isBusy || visibleModelPicker.options.length === 0}
 			emptyText="No models found."
 			onValueChange={(value) => {
 				handleModelSelect(value);
