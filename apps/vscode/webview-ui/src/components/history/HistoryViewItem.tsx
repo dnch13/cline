@@ -1,5 +1,6 @@
 import { HistoryItem } from "@shared/HistoryItem"
 import { StringRequest } from "@shared/proto/cline/common"
+import { deriveAutoTitle } from "@shared/task-title"
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 import {
 	ArrowDownIcon,
@@ -71,6 +72,9 @@ const HistoryViewItem = ({
 		[item.id, item.isFavorited, pendingFavoriteToggles],
 	)
 
+	// Auto-derived fallback keeps unnamed tasks readable; a custom title always wins.
+	const displayTitle = item.customTitle || deriveAutoTitle(item.task)
+
 	const handleShowTaskWithId = useCallback((id: string) => {
 		TaskServiceClient.showTaskWithId(StringRequest.create({ value: id })).catch((error) =>
 			console.error("Error showing task:", error),
@@ -139,7 +143,7 @@ const HistoryViewItem = ({
 										cancelRename()
 									}
 								}}
-								placeholder="Task name"
+								placeholder="Task name (empty = auto)"
 								value={renameValue}
 							/>
 							<Button
@@ -165,9 +169,11 @@ const HistoryViewItem = ({
 						</div>
 					) : (
 						<div className="flex flex-col flex-1 min-w-0">
-							{item.customTitle && (
-								<div className="truncate font-medium ph-no-capture" title={item.customTitle}>
-									{item.customTitle}
+							{displayTitle && (
+								<div
+									className={cn("truncate font-medium ph-no-capture", !item.customTitle && "text-description")}
+									title={displayTitle}>
+									{displayTitle}
 								</div>
 							)}
 							<div className="line-clamp-1 overflow-hidden break-words whitespace-pre-wrap">

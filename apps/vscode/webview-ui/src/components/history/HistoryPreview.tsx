@@ -1,4 +1,6 @@
 import { StringRequest } from "@shared/proto/cline/common"
+import { TaskRenameRequest } from "@shared/proto/cline/task"
+import { deriveAutoTitle } from "@shared/task-title"
 import { memo, useMemo, useState } from "react"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useUsageCostVisibility } from "@/hooks/useUsageCostVisibility"
@@ -29,6 +31,41 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 		TaskServiceClient.showTaskWithId(StringRequest.create({ value: id })).catch((error) =>
 			console.error("Error showing task:", error),
 		)
+	}
+
+	// Inline rename state for the item currently being renamed (one at a time).
+	const [renamingId, setRenamingId] = useState<string | null>(null)
+	const [renameValue, setRenameValue] = useState("")
+	// Optimistic rename overrides; the authoritative value arrives with the
+	// next state push from the extension host.
+	const [renamedTitles, setRenamedTitles] = useState<Record<string, string>>({})
+
+	const startRename = (id: string, currentTitle: string) => {
+		setRenameValue(currentTitle)
+		setRenamingId(id)
+	}
+
+	const cancelRename = () => {
+		setRenamingId(null)
+		setRenameValue("")
+	}
+
+	const commitRename = (id: string, currentTitle: string) => {
+		const nextTitle = renameValue.trim()
+		setRenamingId(null)
+		setRenameValue("")
+		if (nextTitle === currentTitle) {
+			return
+		}
+		setRenamedTitles((prev) => ({ ...prev, [id]: nextTitle }))
+		TaskServiceClient.renameTask(TaskRenameRequest.create({ taskId: id, title: nextTitle })).catch((error) => {
+			console.error("Error renaming task:", error)
+			setRenamedTitles((prev) => {
+				const next = { ...prev }
+				delete next[id]
+				return next
+			})
+		})
 	}
 
 	const validItems = useMemo(() => taskHistory.filter((item) => item.ts && item.task), [taskHistory])
@@ -142,6 +179,52 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 						font-size: var(--vscode-font-size);
 						font-weight: 600;
 						line-height: 1.4;
+					}
+					.history-task-title.is-auto {
+						color: var(--vscode-descriptionForeground);
+					}
+					.history-preview-rename {
+						display: flex;
+						align-items: center;
+						gap: 4px;
+						min-width: 0;
+					}
+					.history-preview-rename-input {
+						flex: 1;
+						min-width: 0;
+						background-color: var(--vscode-input-background);
+						color: var(--vscode-input-foreground);
+						border: 1px solid var(--vscode-input-border, transparent);
+						border-radius: 4px;
+						padding: 2px 6px;
+						font-size: var(--vscode-font-size);
+						font-family: inherit;
+						outline: none;
+					}
+					.history-preview-rename-input:focus {
+						border-color: var(--vscode-focusBorder);
+					}
+					.history-preview-btn {
+						background: none;
+						border: none;
+						cursor: pointer;
+						padding: 2px;
+						border-radius: 4px;
+						color: var(--vscode-descriptionForeground);
+						display: flex;
+						align-items: center;
+						opacity: 0;
+						transition: opacity 0.1s ease;
+					}
+					.history-preview-item:hover .history-preview-btn {
+						opacity: 1;
+					}
+					.history-preview-btn.visible {
+						opacity: 1;
+					}
+					.history-preview-btn:hover {
+						color: var(--vscode-foreground);
+						background-color: var(--vscode-toolbar-hoverBackground);
 					}
 					.history-task-description {
 						flex: 1;
@@ -296,11 +379,15 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 							const cwd = item.cwdOnTaskInitialization
 							const isExternalRepo = !!cwd && !currentRootPaths.has(normalizePath(cwd))
 							const repoName = cwd ? getRepoName(cwd) : undefined
+							const isRenaming = renamingId === item.id
+							// Custom title > optimistic rename > auto-derived from the request.
+							const displayTitle = item.customTitle || renamedTitles[item.id] || deriveAutoTitle(item.task)
+							const isAutoTitle = !(item.customTitle || renamedTitles[item.id])
 							return (
 								<div
 									className={`history-preview-item${isExternalRepo ? " history-preview-item-external" : ""}`}
 									key={item.id}
-									onClick={() => handleHistorySelect(item.id)}>
+									onClick={() => !isRenaming && handleHistorySelect(item.id)}>
 									<div className="history-task-content">
 										{item.isFavorited && (
 											<span
@@ -313,11 +400,52 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 											/>
 										)}
 										<div className="history-task-text">
-											{item.customTitle ? (
-												<div className="history-task-title ph-no-capture" title={item.customTitle}>
-													{item.customTitle}
+											{isRenaming ? (
+												<div className="history-preview-rename" onClick={(e) => e.stopPropagation()}>
+													<input
+														autoFocus
+														className="history-preview-rename-input"
+														maxLength={200}
+														onChange={(e) => setRenameValue(e.target.value)}
+														onKeyDown={(e) => {
+															e.stopPropagation()
+															if (e.key === "Enter") {
+																commitRename(item.id, item.customTitle ?? "")
+															} else if (e.key === "Escape") {
+																cancelRename()
+															}
+														}}
+														placeholder="Task name (empty = auto)"
+														value={renameValue}
+													/>
+													<button
+														aria-label="Save name"
+														className="history-preview-btn visible"
+														onClick={(e) => {
+															e.stopPropagation()
+															commitRename(item.id, item.customTitle ?? "")
+														}}
+														type="button">
+														<span className="codicon codicon-check" />
+													</button>
+													<button
+														aria-label="Cancel rename"
+														className="history-preview-btn visible"
+														onClick={(e) => {
+															e.stopPropagation()
+															cancelRename()
+														}}
+														type="button">
+														<span className="codicon codicon-close" />
+													</button>
 												</div>
-											) : null}
+											) : (
+												<div
+													className={`history-task-title ph-no-capture${isAutoTitle ? " is-auto" : ""}`}
+													title={displayTitle}>
+													{displayTitle}
+												</div>
+											)}
 											<div className="history-task-description ph-no-capture">{item.task}</div>
 										</div>
 										{item.isLegacy && <span className="history-cost-chip">Legacy</span>}
@@ -334,6 +462,18 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 										</span>
 										{item.totalCost != null && isCostVisible(item.apiProvider) && (
 											<span className="history-cost-chip">${item.totalCost.toFixed(2)}</span>
+										)}
+										{!isRenaming && (
+											<button
+												aria-label="Rename task"
+												className="history-preview-btn"
+												onClick={(e) => {
+													e.stopPropagation()
+													startRename(item.id, item.customTitle ?? "")
+												}}
+												type="button">
+												<span className="codicon codicon-edit" />
+											</button>
 										)}
 									</div>
 								</div>
