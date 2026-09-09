@@ -77,7 +77,6 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 				{`
 					.history-preview-item {
 						background-color: color-mix(in srgb, var(--vscode-toolbar-hoverBackground) 65%, transparent);
-						border-left: 2px solid transparent;
 						border-radius: 4px;
 						position: relative;
 						overflow: hidden;
@@ -92,34 +91,21 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 						background-color: color-mix(in srgb, var(--vscode-toolbar-hoverBackground) 100%, transparent);
 						pointer-events: auto;
 					}
-					.history-preview-item-current {
-						border-left-color: var(--vscode-button-background);
-						background-color: color-mix(in srgb, var(--vscode-button-background) 8%, transparent);
-					}
-					.history-preview-item.history-preview-item-current:hover {
-						background-color: color-mix(in srgb, var(--vscode-button-background) 16%, transparent);
-					}
-					.history-repo-icon {
-						color: var(--vscode-button-background);
-						flex-shrink: 0;
-					}
-					.history-preview-item-external {
-						border-left: 2px dashed color-mix(in srgb, var(--vscode-descriptionForeground) 45%, transparent);
-					}
 					.history-preview-item-external .history-task-description {
-						color: var(--vscode-descriptionForeground);
+						color: var(--vscode-charts-yellow, #dcdcaa);
 					}
 					.history-repo-chip {
 						display: inline-flex;
 						align-items: center;
 						gap: 3px;
-						color: var(--vscode-descriptionForeground);
+						color: var(--vscode-charts-yellow, #dcdcaa);
 						font-size: 0.8em;
-						border: 1px solid color-mix(in srgb, var(--vscode-descriptionForeground) 35%, transparent);
-						border-radius: 10px;
-						padding: 1px 6px;
-						white-space: nowrap;
-						flex-shrink: 0;
+						max-width: 140px;
+						min-width: 0;
+					}
+					.history-repo-name {
+						overflow: hidden;
+						text-overflow: ellipsis;
 					}
 					.history-task-content {
 						flex: 1;
@@ -279,22 +265,14 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 					{validItems.length > 0 ? (
 						pageItems.map((item) => {
 							const cwd = item.cwdOnTaskInitialization
-							const isCurrentRepo = !!cwd && currentRootPaths.has(normalizePath(cwd))
-							const isExternalRepo = !!cwd && !isCurrentRepo
+							const isExternalRepo = !!cwd && !currentRootPaths.has(normalizePath(cwd))
 							const repoName = cwd ? getRepoName(cwd) : undefined
 							return (
 								<div
-									className={`history-preview-item${isCurrentRepo ? " history-preview-item-current" : ""}${isExternalRepo ? " history-preview-item-external" : ""}`}
+									className={`history-preview-item${isExternalRepo ? " history-preview-item-external" : ""}`}
 									key={item.id}
 									onClick={() => handleHistorySelect(item.id)}>
 									<div className="history-task-content">
-										{isCurrentRepo && (
-											<span
-												aria-label="Task from this workspace"
-												className="codicon codicon-root-folder history-repo-icon"
-												title="Task from this workspace"
-											/>
-										)}
 										{item.isFavorited && (
 											<span
 												aria-label="Favorited"
@@ -306,16 +284,16 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 											/>
 										)}
 										<div className="history-task-description ph-no-capture">{item.task}</div>
-										{isExternalRepo && repoName && (
-											<span className="history-repo-chip" title={cwd}>
-												<span className="codicon codicon-folder" />
-												{repoName}
-											</span>
-										)}
 										{item.isLegacy && <span className="history-cost-chip">Legacy</span>}
 									</div>
 									<div className="history-meta-stack">
 										<span className="history-date">{formatDate(item.ts)}</span>
+										{isExternalRepo && repoName && (
+											<span className="history-repo-chip" title={cwd}>
+												<span className="codicon codicon-folder" />
+												<span className="history-repo-name">{repoName}</span>
+											</span>
+										)}
 										{item.totalCost != null && isCostVisible(item.apiProvider) && (
 											<span className="history-cost-chip">${item.totalCost.toFixed(2)}</span>
 										)}
