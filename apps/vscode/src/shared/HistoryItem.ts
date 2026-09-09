@@ -13,6 +13,8 @@ export type HistoryItem = {
 	cwdOnTaskInitialization?: string
 	conversationHistoryDeletedRange?: [number, number]
 	isFavorited?: boolean
+	/** User-defined display name shown above the task text; empty string clears it. */
+	customTitle?: string
 
 	modelId?: string
 	/**

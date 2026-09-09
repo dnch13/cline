@@ -6,11 +6,14 @@ import {
 	ArrowLeftIcon,
 	ArrowRightIcon,
 	ArrowUpIcon,
+	CheckIcon,
 	ChevronsDownUpIcon,
 	ChevronsUpDownIcon,
 	DownloadIcon,
+	PencilIcon,
 	StarIcon,
 	TrashIcon,
+	XIcon,
 } from "lucide-react"
 import { memo, useCallback, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
@@ -26,6 +29,7 @@ type HistoryViewItemProps = {
 	pendingFavoriteToggles: Record<string, boolean>
 	handleDeleteHistoryItem: (id: string) => void
 	toggleFavorite: (id: string, isCurrentlyFavorited: boolean) => void
+	onRename: (id: string, title: string) => Promise<void>
 	handleHistorySelect: (itemId: string, checked: boolean) => void
 }
 
@@ -34,11 +38,33 @@ const HistoryViewItem = ({
 	pendingFavoriteToggles,
 	handleDeleteHistoryItem,
 	toggleFavorite,
+	onRename,
 	handleHistorySelect,
 	selectedItems,
 }: HistoryViewItemProps) => {
 	const [expanded, setExpanded] = useState(false)
+	const [isRenaming, setIsRenaming] = useState(false)
+	const [renameValue, setRenameValue] = useState("")
 	const isCostVisible = useUsageCostVisibility()
+
+	const startRename = useCallback(() => {
+		setRenameValue(item.customTitle ?? "")
+		setIsRenaming(true)
+	}, [item.customTitle])
+
+	const commitRename = useCallback(() => {
+		const nextTitle = renameValue.trim()
+		setIsRenaming(false)
+		if (nextTitle === (item.customTitle ?? "")) {
+			return
+		}
+		onRename(item.id, nextTitle).catch((error) => console.error("Error renaming task:", error))
+	}, [item.customTitle, item.id, onRename, renameValue])
+
+	const cancelRename = useCallback(() => {
+		setIsRenaming(false)
+		setRenameValue("")
+	}, [])
 
 	const isFavoritedItem = useMemo(
 		() => pendingFavoriteToggles[item.id] ?? item.isFavorited,
@@ -97,15 +123,76 @@ const HistoryViewItem = ({
 					handleShowTaskWithId(item.id)
 				}}>
 				<div className="flex items-center gap-2">
-					<div className="line-clamp-1 overflow-hidden break-words whitespace-pre-wrap flex-1 min-w-0">
-						<span className="ph-no-capture">{item.task}</span>
-					</div>
+					{isRenaming ? (
+						<div className="flex flex-1 min-w-0 items-center gap-1">
+							<input
+								autoFocus
+								className="flex-1 min-w-0 rounded border border-accent/30 bg-transparent px-1.5 py-0.5 text-sm outline-none focus:border-accent"
+								maxLength={200}
+								onChange={(e) => setRenameValue(e.target.value)}
+								onClick={(e) => e.stopPropagation()}
+								onKeyDown={(e) => {
+									e.stopPropagation()
+									if (e.key === "Enter") {
+										commitRename()
+									} else if (e.key === "Escape") {
+										cancelRename()
+									}
+								}}
+								placeholder="Task name"
+								value={renameValue}
+							/>
+							<Button
+								aria-label="Save name"
+								className="p-0"
+								onClick={(e) => {
+									e.stopPropagation()
+									commitRename()
+								}}
+								variant="ghost">
+								<CheckIcon className="stroke-1" />
+							</Button>
+							<Button
+								aria-label="Cancel rename"
+								className="p-0"
+								onClick={(e) => {
+									e.stopPropagation()
+									cancelRename()
+								}}
+								variant="ghost">
+								<XIcon className="stroke-1" />
+							</Button>
+						</div>
+					) : (
+						<div className="flex flex-col flex-1 min-w-0">
+							{item.customTitle && (
+								<div className="truncate font-medium ph-no-capture" title={item.customTitle}>
+									{item.customTitle}
+								</div>
+							)}
+							<div className="line-clamp-1 overflow-hidden break-words whitespace-pre-wrap">
+								<span className="ph-no-capture">{item.task}</span>
+							</div>
+						</div>
+					)}
 					{item.isLegacy && (
 						<span className="text-xs uppercase rounded px-1.5 py-0.5 bg-accent/20 text-description flex-shrink-0">
 							Legacy
 						</span>
 					)}
 					<div className="flex gap-2 flex-shrink-0">
+						<Button
+							aria-label="Rename task"
+							className="p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+							onClick={(e) => {
+								e.stopPropagation()
+								startRename()
+							}}
+							variant="ghost">
+							<span className="flex items-center gap-1 text-xs">
+								<PencilIcon className="stroke-1" />
+							</span>
+						</Button>
 						<Button
 							aria-label="Delete"
 							className="p-0 opacity-0 group-hover:opacity-100 transition-opacity"

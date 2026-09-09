@@ -34,6 +34,8 @@ service TaskService {
   rpc exportTaskWithId(StringRequest) returns (Empty);
   // Toggles the favorite status of a task
   rpc toggleTaskFavorite(TaskFavoriteRequest) returns (Empty);
+  // Renames a task (sets or clears its user-defined custom title)
+  rpc renameTask(TaskRenameRequest) returns (Empty);
   // Gets filtered task history
   rpc getTaskHistory(GetTaskHistoryRequest) returns (TaskHistoryArray);
   // Sends a response to a previous ask operation
@@ -94,6 +96,14 @@ message TaskFavoriteRequest {
   bool is_favorited = 3;
 }
 
+// Request message for renaming a task
+message TaskRenameRequest {
+  Metadata metadata = 1;
+  string task_id = 2;
+  // New custom title; empty string clears the title
+  string title = 3;
+}
+
 // Response for task details
 message TaskResponse {
   string id = 1;
@@ -144,6 +154,8 @@ message TaskItem {
   // Provider id the task ran on. Empty for tasks recorded before this
   // field existed and for legacy imports; consumers show cost in that case.
   string api_provider = 13;
+  // User-defined custom title displayed above the task text; empty when unset
+  string custom_title = 14;
 }
 
 // Request for ask response operation

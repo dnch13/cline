@@ -127,6 +127,22 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 						gap: 8px;
 						min-width: 0;
 					}
+					.history-task-text {
+						flex: 1;
+						min-width: 0;
+						display: flex;
+						flex-direction: column;
+						gap: 2px;
+					}
+					.history-task-title {
+						overflow: hidden;
+						text-overflow: ellipsis;
+						white-space: nowrap;
+						color: var(--vscode-foreground);
+						font-size: var(--vscode-font-size);
+						font-weight: 600;
+						line-height: 1.4;
+					}
 					.history-task-description {
 						flex: 1;
 						overflow: hidden;
@@ -296,7 +312,14 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 												}}
 											/>
 										)}
-										<div className="history-task-description ph-no-capture">{item.task}</div>
+										<div className="history-task-text">
+											{item.customTitle ? (
+												<div className="history-task-title ph-no-capture" title={item.customTitle}>
+													{item.customTitle}
+												</div>
+											) : null}
+											<div className="history-task-description ph-no-capture">{item.task}</div>
+										</div>
 										{item.isLegacy && <span className="history-cost-chip">Legacy</span>}
 									</div>
 									<div className="history-meta-stack">

@@ -2252,7 +2252,8 @@ export class Controller {
 			const query = searchQuery.toLowerCase()
 			filteredTasks = filteredTasks.filter((item) => {
 				const task = metadataString(item.metadata, "title") ?? item.prompt ?? ""
-				return task.toLowerCase().includes(query)
+				const customTitle = metadataString(item.metadata, "customTitle") ?? ""
+				return task.toLowerCase().includes(query) || customTitle.toLowerCase().includes(query)
 			})
 		}
 
@@ -2300,6 +2301,7 @@ export class Controller {
 				cacheReads: metadataNumber(metadata, "cacheReads") ?? 0,
 				modelId: item.model || metadataString(metadata, "modelId") || "",
 				apiProvider: item.provider ?? "",
+				customTitle: metadataString(metadata, "customTitle") ?? "",
 				isLegacy:
 					metadataBoolean(metadata, "legacyTask") === true ||
 					metadataBoolean(metadata, "migratedFromLegacyTask") === true,
@@ -2325,6 +2327,7 @@ export class Controller {
 					cacheReads: 0,
 					modelId: this.task.api?.getModel?.().id ?? "",
 					apiProvider: "",
+					customTitle: "",
 					isLegacy: false,
 				})
 			}
@@ -2465,6 +2468,22 @@ export class Controller {
 		await this.taskHistory.updateTaskHistory({
 			...historyItem,
 			isFavorited,
+		})
+		await this.postStateToWebview()
+	}
+
+	async renameTask(taskId: string, title: string): Promise<void> {
+		const historyItem = await this.taskHistory.findHistoryItem(taskId)
+		if (!historyItem) {
+			Logger.log(`[renameTask] Task not found in history: ${taskId}`)
+			return
+		}
+
+		const trimmedTitle = title.trim()
+		await this.taskHistory.updateTaskHistory({
+			...historyItem,
+			// Empty string explicitly clears the custom title (undefined would preserve it).
+			customTitle: trimmedTitle || "",
 		})
 		await this.postStateToWebview()
 	}

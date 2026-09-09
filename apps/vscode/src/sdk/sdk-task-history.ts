@@ -133,6 +133,10 @@ export function historyItemToSessionMetadata(item: HistoryItem, fallbackModelId?
 		cacheReads: item.cacheReads ?? 0,
 		modelId: item.modelId ?? fallbackModelId ?? "",
 		legacyTask: item.isLegacy ?? false,
+		// Only write the custom title when the item carries one (including the
+		// explicit empty string, which clears it) — unrelated updates (usage,
+		// favorite toggles) build items without it and must preserve the value.
+		...(item.customTitle !== undefined ? { customTitle: item.customTitle } : {}),
 	}
 }
 
@@ -222,6 +226,7 @@ export function sessionHistoryRecordToHistoryItem(item: SessionHistoryRecord): H
 		totalCost: metadataNumber(metadata, "totalCost") ?? 0,
 		size: metadataNumber(metadata, "size"),
 		isFavorited: metadataBoolean(metadata, "isFavorited") ?? metadataBoolean(metadata, "is_favorited") ?? false,
+		customTitle: metadataString(metadata, "customTitle") || undefined,
 		modelId: item.model || metadataString(metadata, "modelId") || "",
 		apiProvider: item.provider || undefined,
 		cwdOnTaskInitialization: item.cwd ?? item.workspaceRoot,
