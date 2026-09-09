@@ -801,8 +801,10 @@ export function createAskQuestionTool(
 	return {
 		name: "ask_question",
 		description:
-			"Ask user a question for clarifying or gathering information needed to complete the task. " +
-			"For example, ask the user clarifying questions about a key implementation decision. " +
+			"Ask the user a single question with 2-5 selectable options. " +
+			"This is a fallback for when the task cannot proceed without information only the user has — " +
+			"do not ask by default. Make reasonable assumptions, state them, and keep working autonomously; " +
+			"when done, finish with the resulting text instead of asking. " +
 			"You should only ask one question. " +
 			"Provide an array of 2-5 options for the user to choose from. " +
 			"Never include an option to toggle to Act mode.",

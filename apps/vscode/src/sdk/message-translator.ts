@@ -33,6 +33,7 @@ import { type AgentEvent, formatDisplayUserInput, type ProviderErrorClass } from
 import { COMMAND_OUTPUT_STRING } from "@shared/combineCommandSequences"
 import type {
 	ClineApiReqInfo,
+	ClineAskQuestion,
 	ClineAskUseMcpServer,
 	ClineAskUseSubagents,
 	ClineCompactionInfo,
@@ -2280,6 +2281,66 @@ function finalizePersistedToolUse(
 	)
 }
 
+/**
+ * Tool names whose persisted tool_use renders as the ask:"followup" question row.
+ * (Live, the interaction coordinator services these tools — see the suppression
+ * comments in the content_start/content_end handlers.)
+ */
+function isAskQuestionToolName(toolName: string): boolean {
+	return toolName === "ask_question" || toolName === "ask_followup_question"
+}
+
+/**
+ * Rebuild the ask:"followup" question row (and, when the question was answered,
+ * the say:"user_feedback" answer row) from a persisted ask_question tool_use.
+ *
+ * Live, the interaction coordinator executes ask_question and emits these
+ * display rows itself; the translator intentionally renders no tool row for it
+ * (see the content_start suppression). History replay has no live executor, so
+ * without this reconstruction the question — and its answer — silently vanish
+ * from a reopened task. A question whose tool_result never arrived (the session
+ * was closed while it was pending) re-renders unanswered: when it is the
+ * transcript's final dangling tool_use it lands as the LAST row (after the
+ * synthetic completion_result ask), which the task-control coordinator turns
+ * back into the interactive follow-up UI instead of the generic Resume button.
+ */
+function persistedAskQuestionRows(toolUse: SdkToolUseBlock, state: MessageTranslatorState, answer?: string): ClineMessage[] {
+	const input = (toolUse.input ?? {}) as { question?: unknown; options?: unknown }
+	const question = typeof input.question === "string" ? input.question : ""
+	if (!question) {
+		return []
+	}
+	const options = Array.isArray(input.options)
+		? input.options.filter((option): option is string => typeof option === "string")
+		: undefined
+	const askData: ClineAskQuestion = {
+		question,
+		options: options && options.length > 0 ? options : undefined,
+		// Stamp the chosen option so a reloaded conversation renders the question
+		// as answered instead of offering clickable buttons again.
+		...(answer !== undefined && options?.includes(answer) ? { selected: answer } : {}),
+	}
+	const rows: ClineMessage[] = [
+		{
+			ts: state.nextTs(),
+			type: "ask",
+			ask: "followup",
+			text: JSON.stringify(askData),
+			partial: false,
+		},
+	]
+	if (answer) {
+		rows.push({
+			ts: state.nextTs(),
+			type: "say",
+			say: "user_feedback",
+			text: answer,
+			partial: false,
+		})
+	}
+	return rows
+}
+
 export interface SdkMessagesToClineMessagesOptions {
 	/**
 	 * Whether the transcript's LAST agent turn ended cleanly (per the session record's status).
@@ -2324,7 +2385,11 @@ export function sdkMessagesToClineMessages(
 
 	const flushUnmatchedToolUses = () => {
 		for (const toolUse of pendingToolUses.values()) {
-			clineMessages.push(...finalizePersistedToolUse(toolUse, state))
+			clineMessages.push(
+				...(isAskQuestionToolName(toolUse.name)
+					? persistedAskQuestionRows(toolUse, state)
+					: finalizePersistedToolUse(toolUse, state)),
+			)
 		}
 		pendingToolUses.clear()
 	}
@@ -2513,7 +2578,11 @@ export function sdkMessagesToClineMessages(
 			}
 
 			pendingToolUses.delete(block.tool_use_id)
-			clineMessages.push(...finalizePersistedToolUse(toolUse, state, block.content, block.is_error))
+			clineMessages.push(
+				...(isAskQuestionToolName(toolUse.name)
+					? persistedAskQuestionRows(toolUse, state, extractToolOutputText(block.content))
+					: finalizePersistedToolUse(toolUse, state, block.content, block.is_error)),
+			)
 		}
 	}
 

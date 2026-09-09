@@ -4130,6 +4130,72 @@ describe("tool display paths are relativized to the cwd", () => {
 		expect(parseTool(toolMessage?.text).path).toBe("src/index.ts")
 	})
 
+	it("re-renders an answered ask_question as a followup ask row plus the user's answer", () => {
+		const messages: SdkMessage[] = [
+			{ role: "user", content: '<user_input mode="act">pick a database</user_input>' } as SdkMessage,
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "tool_use",
+						id: "q1",
+						name: "ask_question",
+						input: { question: "Which database?", options: ["Postgres", "SQLite"] },
+					},
+				],
+			} as SdkMessage,
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "q1", content: "Postgres" }] } as SdkMessage,
+			{ role: "assistant", content: [{ type: "text", text: "Using Postgres." }] } as SdkMessage,
+		]
+
+		const clineMessages = sdkMessagesToClineMessages(messages)
+
+		const followup = clineMessages.find((m) => m.type === "ask" && m.ask === "followup")
+		expect(followup).toBeDefined()
+		const parsed = JSON.parse(followup?.text ?? "{}")
+		expect(parsed.question).toBe("Which database?")
+		expect(parsed.options).toEqual(["Postgres", "SQLite"])
+		// The chosen option is stamped so the reloaded question renders answered.
+		expect(parsed.selected).toBe("Postgres")
+
+		const feedback = clineMessages.find((m) => m.type === "say" && m.say === "user_feedback" && m.text === "Postgres")
+		expect(feedback).toBeDefined()
+		expect(clineMessages.indexOf(followup!)).toBeLessThan(clineMessages.indexOf(feedback!))
+	})
+
+	it("re-renders a dangling ask_question as the interactive trailing followup ask", () => {
+		const messages: SdkMessage[] = [
+			{ role: "user", content: '<user_input mode="act">pick a database</user_input>' } as SdkMessage,
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "tool_use",
+						id: "q1",
+						name: "ask_question",
+						input: { question: "Which database?", options: ["Postgres", "SQLite"] },
+					},
+				],
+			} as SdkMessage,
+		]
+
+		const clineMessages = sdkMessagesToClineMessages(messages)
+
+		// The unanswered question must be the LAST row (after the synthetic
+		// completion_result ask) so a reopened task presents it interactively.
+		const last = clineMessages.at(-1)
+		expect(last?.type).toBe("ask")
+		expect(last?.ask).toBe("followup")
+		const parsed = JSON.parse(last?.text ?? "{}")
+		expect(parsed.question).toBe("Which database?")
+		expect(parsed.options).toEqual(["Postgres", "SQLite"])
+		expect(parsed.selected).toBeUndefined()
+		const completionAskIndex = clineMessages.findIndex((m) => m.ask === "completion_result")
+		expect(completionAskIndex).toBeGreaterThan(-1)
+		expect(clineMessages.indexOf(last!)).toBeGreaterThan(completionAskIndex)
+		expect(clineMessages.some((m) => m.say === "user_feedback")).toBe(false)
+	})
+
 	it("rehydrates generated images from persisted SDK history", () => {
 		const messages: SdkMessage[] = [
 			{

@@ -272,6 +272,34 @@ describe("SdkTaskControlCoordinator", () => {
 		expect(options.setTurnPhase).toHaveBeenCalledWith("resumable", expect.any(Number))
 	})
 
+	it("re-presents an unanswered follow-up question instead of the resume affordance", async () => {
+		// History rendering rebuilds the transcript's final dangling ask_question
+		// as the trailing ask:"followup" row; reopening must keep it interactive
+		// (option buttons + follow-up input) rather than displacing it with the
+		// generic Resume button.
+		const sdkClineMessages: ClineMessage[] = [
+			{ ts: 1, type: "say", say: "task", text: "hello" },
+			{
+				ts: 2,
+				type: "ask",
+				ask: "followup",
+				text: JSON.stringify({ question: "Which database?", options: ["Postgres", "SQLite"] }),
+			},
+		]
+		const { coordinator, options, state } = makeCoordinator({
+			hasHistoryItem: true,
+			clineMessages: sdkClineMessages,
+			sessionStatus: "cancelled",
+		})
+
+		await coordinator.showTaskWithId("task-1")
+
+		const shown = state.task?.messageStateHandler.getClineMessages()
+		expect(shown?.at(-1)).toEqual(expect.objectContaining({ type: "ask", ask: "followup", ts: 2 }))
+		expect(shown?.some((m) => m.ask === "resume_task" || m.ask === "resume_completed_task")).toBe(false)
+		expect(options.setTurnPhase).toHaveBeenCalledWith("awaiting_followup", 2)
+	})
+
 	it("sets the turn phase to completed when showing a completed task", async () => {
 		const sdkClineMessages: ClineMessage[] = [
 			{ ts: 1, type: "say", say: "task", text: "hello" },

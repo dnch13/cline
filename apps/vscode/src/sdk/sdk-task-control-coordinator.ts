@@ -214,11 +214,20 @@ export class SdkTaskControlCoordinator {
 				return historyItem
 			}
 			const messages = this.options.messages.finalizeMessagesForSave(rawMessages)
+			// A task whose transcript ends on an unanswered ask_question (the session
+			// was closed while the question was pending) re-presents that question
+			// instead of the generic Resume affordance: the followup ask stays the
+			// LAST message so the webview renders its option buttons and answer
+			// input, and answering it (askResponse → messageResponse) resumes the
+			// session with the reply.
+			const hasUnansweredFollowup = !isLegacyTask && isUnansweredFollowupAsk(messages.at(-1))
 			const cleanedMessages = isLegacyTask
 				? this.appendLegacyTaskWarningAndResumeMessage(messages)
-				: messages.length > 0
-					? this.appendFreshResumeMessage(messages, sessionStatus)
-					: []
+				: hasUnansweredFollowup
+					? messages.filter((m) => m.ask !== "resume_task" && m.ask !== "resume_completed_task")
+					: messages.length > 0
+						? this.appendFreshResumeMessage(messages, sessionStatus)
+						: []
 
 			const task = createTaskProxy(
 				taskId,
@@ -239,6 +248,11 @@ export class SdkTaskControlCoordinator {
 				this.options.setTurnPhase("completed", lastMessage.ts)
 			} else if (lastMessage?.type === "ask" && lastMessage.ask === "resume_task") {
 				this.options.setTurnPhase("resumable", lastMessage.ts)
+			} else if (lastMessage?.type === "ask" && lastMessage.ask === "followup") {
+				// The reopened task ends on a re-presented unanswered question: the
+				// footer's follow-up input (and the question's option buttons) answer
+				// it, resuming the session with the reply.
+				this.options.setTurnPhase("awaiting_followup", lastMessage.ts)
 			} else {
 				this.options.setTurnPhase("idle")
 			}
@@ -300,4 +314,13 @@ export class SdkTaskControlCoordinator {
 		)
 		return cleanedMessages
 	}
+}
+
+/**
+ * Whether a reopened task's rendered messages end on an unanswered ask_question
+ * (history rendering rebuilds it as the trailing ask:"followup" row when the
+ * persisted transcript's final tool_use never got a tool_result).
+ */
+function isUnansweredFollowupAsk(message: ClineMessage | undefined): boolean {
+	return message?.type === "ask" && message.ask === "followup" && !!message.text
 }
