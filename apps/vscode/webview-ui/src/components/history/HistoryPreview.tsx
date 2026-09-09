@@ -11,8 +11,17 @@ type HistoryPreviewProps = {
 // Number of recent chats shown per page on the main screen.
 const RECENT_PAGE_SIZE = 20
 
+/** Normalizes a filesystem path for workspace comparison (separator, case, trailing slash). */
+const normalizePath = (path: string): string => path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+
+/** Returns the last path segment (repository folder name). */
+const getRepoName = (path: string): string => {
+	const parts = path.replace(/\\/g, "/").split("/").filter(Boolean)
+	return parts[parts.length - 1] ?? path
+}
+
 const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
-	const { taskHistory } = useExtensionState()
+	const { taskHistory, workspaceRoots } = useExtensionState()
 	const isCostVisible = useUsageCostVisibility()
 	const [page, setPage] = useState(1)
 
@@ -29,6 +38,31 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 	const currentPage = Math.min(page, totalPages)
 	const pageItems = validItems.slice((currentPage - 1) * RECENT_PAGE_SIZE, currentPage * RECENT_PAGE_SIZE)
 
+	// Paths of this window's workspace roots, used to tell tasks that belong to
+	// the current repository apart from tasks started in other repositories.
+	const currentRootPaths = useMemo(() => new Set(workspaceRoots.map((root) => normalizePath(root.path))), [workspaceRoots])
+
+	// Page numbers shown in the pager: all of them when there are few,
+	// otherwise a window around the current page with ellipses (1 … 4 5 6 … 12).
+	const pageNumbers = useMemo<(number | "…")[]>(() => {
+		if (totalPages <= 7) {
+			return Array.from({ length: totalPages }, (_, i) => i + 1)
+		}
+		const pages = [1, totalPages, currentPage - 1, currentPage, currentPage + 1]
+			.filter((p) => p >= 1 && p <= totalPages)
+			.sort((a, b) => a - b)
+		const result: (number | "…")[] = []
+		let previous = 0
+		for (const p of pages) {
+			if (p - previous > 1) {
+				result.push("…")
+			}
+			result.push(p)
+			previous = p
+		}
+		return result
+	}, [currentPage, totalPages])
+
 	const formatDate = (timestamp: number) => {
 		const date = new Date(timestamp)
 		return date?.toLocaleString("en-US", {
@@ -43,6 +77,7 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 				{`
 					.history-preview-item {
 						background-color: color-mix(in srgb, var(--vscode-toolbar-hoverBackground) 65%, transparent);
+						border-left: 2px solid transparent;
 						border-radius: 4px;
 						position: relative;
 						overflow: hidden;
@@ -56,6 +91,35 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 					.history-preview-item:hover {
 						background-color: color-mix(in srgb, var(--vscode-toolbar-hoverBackground) 100%, transparent);
 						pointer-events: auto;
+					}
+					.history-preview-item-current {
+						border-left-color: var(--vscode-button-background);
+						background-color: color-mix(in srgb, var(--vscode-button-background) 8%, transparent);
+					}
+					.history-preview-item.history-preview-item-current:hover {
+						background-color: color-mix(in srgb, var(--vscode-button-background) 16%, transparent);
+					}
+					.history-repo-icon {
+						color: var(--vscode-button-background);
+						flex-shrink: 0;
+					}
+					.history-preview-item-external {
+						border-left: 2px dashed color-mix(in srgb, var(--vscode-descriptionForeground) 45%, transparent);
+					}
+					.history-preview-item-external .history-task-description {
+						color: var(--vscode-descriptionForeground);
+					}
+					.history-repo-chip {
+						display: inline-flex;
+						align-items: center;
+						gap: 3px;
+						color: var(--vscode-descriptionForeground);
+						font-size: 0.8em;
+						border: 1px solid color-mix(in srgb, var(--vscode-descriptionForeground) 35%, transparent);
+						border-radius: 10px;
+						padding: 1px 6px;
+						white-space: nowrap;
+						flex-shrink: 0;
 					}
 					.history-task-content {
 						flex: 1;
@@ -117,7 +181,8 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 					.history-pagination {
 						display: flex;
 						align-items: center;
-						justify-content: space-between;
+						justify-content: center;
+						gap: 2px;
 						padding: 8px 4px 4px 4px;
 					}
 					.history-page-btn {
@@ -143,10 +208,30 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 					.history-page-btn .codicon {
 						font-size: 1.2em;
 					}
-					.history-page-indicator {
+					.history-page-num {
+						background: none;
+						border: none;
+						border-radius: 3px;
+						min-width: 22px;
+						padding: 2px 6px;
+						cursor: pointer;
+						font-size: 0.85em;
+						font-weight: 500;
+						color: var(--vscode-descriptionForeground);
+					}
+					.history-page-num:hover:not(.active) {
+						color: var(--vscode-foreground);
+						background-color: var(--vscode-toolbar-hoverBackground);
+					}
+					.history-page-num.active {
+						color: var(--vscode-button-foreground);
+						background-color: var(--vscode-button-background);
+						cursor: default;
+					}
+					.history-page-ellipsis {
 						color: var(--vscode-descriptionForeground);
 						font-size: 0.85em;
-						white-space: nowrap;
+						padding: 0 2px;
 					}
 				`}
 			</style>
@@ -192,30 +277,52 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 			{
 				<div className="px-4">
 					{validItems.length > 0 ? (
-						pageItems.map((item) => (
-							<div className="history-preview-item" key={item.id} onClick={() => handleHistorySelect(item.id)}>
-								<div className="history-task-content">
-									{item.isFavorited && (
-										<span
-											aria-label="Favorited"
-											className="codicon codicon-star-full"
-											style={{
-												color: "var(--vscode-button-background)",
-												flexShrink: 0,
-											}}
-										/>
-									)}
-									<div className="history-task-description ph-no-capture">{item.task}</div>
-									{item.isLegacy && <span className="history-cost-chip">Legacy</span>}
+						pageItems.map((item) => {
+							const cwd = item.cwdOnTaskInitialization
+							const isCurrentRepo = !!cwd && currentRootPaths.has(normalizePath(cwd))
+							const isExternalRepo = !!cwd && !isCurrentRepo
+							const repoName = cwd ? getRepoName(cwd) : undefined
+							return (
+								<div
+									className={`history-preview-item${isCurrentRepo ? " history-preview-item-current" : ""}${isExternalRepo ? " history-preview-item-external" : ""}`}
+									key={item.id}
+									onClick={() => handleHistorySelect(item.id)}>
+									<div className="history-task-content">
+										{isCurrentRepo && (
+											<span
+												aria-label="Task from this workspace"
+												className="codicon codicon-root-folder history-repo-icon"
+												title="Task from this workspace"
+											/>
+										)}
+										{item.isFavorited && (
+											<span
+												aria-label="Favorited"
+												className="codicon codicon-star-full"
+												style={{
+													color: "var(--vscode-button-background)",
+													flexShrink: 0,
+												}}
+											/>
+										)}
+										<div className="history-task-description ph-no-capture">{item.task}</div>
+										{isExternalRepo && repoName && (
+											<span className="history-repo-chip" title={cwd}>
+												<span className="codicon codicon-folder" />
+												{repoName}
+											</span>
+										)}
+										{item.isLegacy && <span className="history-cost-chip">Legacy</span>}
+									</div>
+									<div className="history-meta-stack">
+										<span className="history-date">{formatDate(item.ts)}</span>
+										{item.totalCost != null && isCostVisible(item.apiProvider) && (
+											<span className="history-cost-chip">${item.totalCost.toFixed(2)}</span>
+										)}
+									</div>
 								</div>
-								<div className="history-meta-stack">
-									<span className="history-date">{formatDate(item.ts)}</span>
-									{item.totalCost != null && isCostVisible(item.apiProvider) && (
-										<span className="history-cost-chip">${item.totalCost.toFixed(2)}</span>
-									)}
-								</div>
-							</div>
-						))
+							)
+						})
 					) : (
 						<div
 							style={{
@@ -236,18 +343,31 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 								onClick={() => setPage(currentPage - 1)}
 								type="button">
 								<span className="codicon codicon-chevron-left" />
-								Previous
 							</button>
-							<span className="history-page-indicator">
-								Page {currentPage} of {totalPages}
-							</span>
+							{pageNumbers.map((pageNumber, index) =>
+								pageNumber === "…" ? (
+									<span className="history-page-ellipsis" key={`ellipsis-${index}`}>
+										…
+									</span>
+								) : (
+									<button
+										aria-current={pageNumber === currentPage ? "page" : undefined}
+										aria-label={`Go to page ${pageNumber}`}
+										className={pageNumber === currentPage ? "history-page-num active" : "history-page-num"}
+										disabled={pageNumber === currentPage}
+										key={pageNumber}
+										onClick={() => setPage(pageNumber)}
+										type="button">
+										{pageNumber}
+									</button>
+								),
+							)}
 							<button
 								aria-label="Next page"
 								className="history-page-btn"
 								disabled={currentPage >= totalPages}
 								onClick={() => setPage(currentPage + 1)}
 								type="button">
-								Next
 								<span className="codicon codicon-chevron-right" />
 							</button>
 						</div>
