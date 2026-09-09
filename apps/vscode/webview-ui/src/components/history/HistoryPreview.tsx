@@ -91,21 +91,34 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 						background-color: color-mix(in srgb, var(--vscode-toolbar-hoverBackground) 100%, transparent);
 						pointer-events: auto;
 					}
-					.history-preview-item-external .history-task-description {
-						color: var(--vscode-charts-yellow, #dcdcaa);
+					.history-preview-item-external {
+						background-color: color-mix(in srgb, var(--vscode-charts-yellow, #dcdcaa) 18%, transparent);
+					}
+					.history-preview-item-external:hover {
+						background-color: color-mix(in srgb, var(--vscode-charts-yellow, #dcdcaa) 28%, transparent);
+					}
+					.history-date-row {
+						display: inline-flex;
+						align-items: center;
+						gap: 6px;
+						max-width: 100%;
 					}
 					.history-repo-chip {
 						display: inline-flex;
 						align-items: center;
 						gap: 3px;
-						color: var(--vscode-charts-yellow, #dcdcaa);
+						color: var(--vscode-foreground);
 						font-size: 0.8em;
-						max-width: 140px;
+						background-color: color-mix(in srgb, var(--vscode-charts-yellow, #dcdcaa) 38%, transparent);
+						border-radius: 4px;
+						padding: 1px 6px;
+						max-width: 120px;
 						min-width: 0;
 					}
 					.history-repo-name {
 						overflow: hidden;
 						text-overflow: ellipsis;
+						white-space: nowrap;
 					}
 					.history-task-content {
 						flex: 1;
@@ -287,13 +300,15 @@ const HistoryPreview = ({ showHistoryView }: HistoryPreviewProps) => {
 										{item.isLegacy && <span className="history-cost-chip">Legacy</span>}
 									</div>
 									<div className="history-meta-stack">
-										<span className="history-date">{formatDate(item.ts)}</span>
-										{isExternalRepo && repoName && (
-											<span className="history-repo-chip" title={cwd}>
-												<span className="codicon codicon-folder" />
-												<span className="history-repo-name">{repoName}</span>
-											</span>
-										)}
+										<span className="history-date-row">
+											{isExternalRepo && repoName && (
+												<span className="history-repo-chip" title={cwd}>
+													<span className="codicon codicon-folder" />
+													<span className="history-repo-name">{repoName}</span>
+												</span>
+											)}
+											<span className="history-date">{formatDate(item.ts)}</span>
+										</span>
 										{item.totalCost != null && isCostVisible(item.apiProvider) && (
 											<span className="history-cost-chip">${item.totalCost.toFixed(2)}</span>
 										)}
