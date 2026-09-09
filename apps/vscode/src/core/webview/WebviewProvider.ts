@@ -64,6 +64,16 @@ export abstract class WebviewProvider {
 	abstract isVisible(): boolean
 
 	/**
+	 * The title shown for the webview document.
+	 *
+	 * Hosts may override this to append host-specific context, e.g. the
+	 * workspace/repository name on VS Code ("Cline - my-repo").
+	 */
+	protected getWebviewTitle(): string {
+		return "Cline"
+	}
+
+	/**
 	 * Defines and returns the HTML that should be rendered within the webview panel.
 	 *
 	 * @remarks This is also the place where references to the React webview build files
@@ -111,7 +121,7 @@ export abstract class WebviewProvider {
 					style-src ${this.getCspSource()} 'unsafe-inline'; 
 					img-src ${this.getCspSource()} https: data:; 
 					script-src 'nonce-${nonce}' 'unsafe-eval';">
-				<title>Cline</title>
+				<title>${this.getWebviewTitle()}</title>
 			</head>
 			<body>
 				<noscript>You need to enable JavaScript to run this app.</noscript>
@@ -207,7 +217,7 @@ export abstract class WebviewProvider {
 					<meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no">
 					<meta http-equiv="Content-Security-Policy" content="${csp.join("; ")}">
 					<link rel="stylesheet" type="text/css" href="${stylesUrl}">
-					<title>Cline</title>
+					<title>${this.getWebviewTitle()}</title>
 				</head>
 				<body>
 					<div id="root"></div>
