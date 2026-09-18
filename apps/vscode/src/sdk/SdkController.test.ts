@@ -13,6 +13,7 @@ const privateControllerProto = SdkController.prototype as unknown as {
 	reDriveAutoRetry: (this: never, sessionId: string, isCancelled: () => boolean) => Promise<void>
 	emitAutoRetryScheduled: (this: never, info: RetryAttemptInfo) => void
 	settleAbandonedRetryPhase: (this: never) => void
+	settleRecoveredAutoRetry: (this: never) => void
 }
 
 describe("isClineManagedProvider", () => {
@@ -528,6 +529,64 @@ describe("auto-recovery marker settles when no action is in flight", () => {
 		await SdkController.prototype.clearTask.call(fake as never)
 
 		expect(order.indexOf("settle")).toBeLessThan(order.indexOf("taskControl"))
+	})
+})
+
+describe("recovered auto-retry releases the hold (settleRecoveredAutoRetry)", () => {
+	it("settles a live marker when the retried turn streams model output", () => {
+		const controller = {
+			interactions: {
+				isAutoRecoveryActive: vi.fn(() => true),
+				settleAutoRecovery: vi.fn(),
+			},
+		}
+
+		privateControllerProto.settleRecoveredAutoRetry.call(controller as never)
+
+		expect(controller.interactions.settleAutoRecovery).toHaveBeenCalledOnce()
+	})
+
+	it("is a no-op when no streak is live", () => {
+		const controller = {
+			interactions: {
+				// Neither recovery loop owns a live marker.
+				isAutoRecoveryActive: vi.fn(() => false),
+				settleAutoRecovery: vi.fn(),
+			},
+		}
+
+		privateControllerProto.settleRecoveredAutoRetry.call(controller as never)
+
+		expect(controller.interactions.settleAutoRecovery).not.toHaveBeenCalled()
+	})
+
+	it("a user-driven askResponse kills the pending streak before the new turn starts", async () => {
+		const order: string[] = []
+		const fake = {
+			task: undefined,
+			pendingClineAuthRetryPrompt: undefined,
+			apiRetry: { cancel: vi.fn(() => order.push("apiRetry.cancel")) },
+			interactions: { settleAutoRecovery: vi.fn(() => order.push("settle")) },
+			settleLiveAutoRecoveryMarker: vi.fn(function (this: {
+				interactions?: { settleAutoRecovery: () => void }
+			}) {
+				this.interactions?.settleAutoRecovery()
+			}),
+			turnStateTracker: {
+				get: vi.fn(() => ({ phase: "retrying" })),
+				set: vi.fn(() => order.push("phase")),
+			},
+			messageTranslatorState: { clearTurnOutcome: vi.fn() },
+			postStateToWebview: vi.fn(() => Promise.resolve()),
+			followups: { askResponse: vi.fn(async () => order.push("funnel")) },
+		}
+
+		await SdkController.prototype.askResponse.call(fake as never)
+
+		// The streak must die (timer cancelled, marker settled) BEFORE the new
+		// turn drives the funnel — otherwise its rows render under a live hold.
+		expect(order.indexOf("apiRetry.cancel")).toBeLessThan(order.indexOf("funnel"))
+		expect(order.indexOf("settle")).toBeLessThan(order.indexOf("funnel"))
 	})
 })
 

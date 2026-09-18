@@ -204,6 +204,93 @@ describe("SdkSessionEventCoordinator", () => {
 		expect(options.messages.appendAndEmit).toHaveBeenCalledWith([kept], event)
 	})
 
+	it("settles the recovery hold when the retried turn streams model output", async () => {
+		// The retried attempt produced text — the streak recovered, so the hold
+		// hiding every row below the decorated error block must release.
+		const textRow: ClineMessage = { ts: 1, type: "say", say: "text", text: "recovered", partial: true }
+		const { coordinator, options, event } = makeCoordinator({
+			translation: {
+				messages: [textRow],
+				sessionEnded: false,
+				turnComplete: false,
+			},
+		})
+
+		await coordinator.handleSessionEvent(event)
+
+		expect(options.settleRecoveredAutoRetry).toHaveBeenCalledOnce()
+		// Settled BEFORE the proving rows append, so one state post carries both
+		// the settled marker and the newly-visible rows.
+		expect(options.settleRecoveredAutoRetry.mock.invocationCallOrder[0]).toBeLessThan(
+			options.messages.appendAndEmit.mock.invocationCallOrder[0],
+		)
+	})
+
+	it("settles the recovery hold on tool rows of a recovered turn", async () => {
+		const toolRow: ClineMessage = { ts: 1, type: "say", say: "tool", text: "read_file", partial: false }
+		const { coordinator, options, event } = makeCoordinator({
+			translation: {
+				messages: [toolRow],
+				sessionEnded: false,
+				turnComplete: false,
+			},
+		})
+
+		await coordinator.handleSessionEvent(event)
+
+		expect(options.settleRecoveredAutoRetry).toHaveBeenCalledOnce()
+	})
+
+	it("does NOT settle on rows that precede or refute recovery", async () => {
+		// api_req_started fires when the request goes out — before success is
+		// known; compaction and completion-less bookkeeping prove nothing.
+		const requestRow: ClineMessage = {
+			ts: 1,
+			type: "say",
+			say: "api_req_started",
+			text: "{}",
+			partial: false,
+		}
+		const compactionRow: ClineMessage = { ts: 2, type: "say", say: "compaction", text: "", partial: false }
+		const errorRow: ClineMessage = { ts: 3, type: "say", say: "error", text: "boom", partial: false }
+		const { coordinator, options, event } = makeCoordinator({
+			translation: {
+				messages: [requestRow, compactionRow, errorRow],
+				sessionEnded: false,
+				turnComplete: false,
+			},
+		})
+
+		await coordinator.handleSessionEvent(event)
+
+		expect(options.settleRecoveredAutoRetry).not.toHaveBeenCalled()
+		expect(options.messages.appendAndEmit).toHaveBeenCalledOnce()
+	})
+
+	it("settles the streak when a user-queued prompt starts its own turn", async () => {
+		const { coordinator, options } = makeCoordinator({
+			translation: {
+				messages: [],
+				sessionEnded: false,
+				turnComplete: false,
+			},
+		})
+		const event: CoreSessionEvent = {
+			type: "pending_prompt_submitted",
+			payload: {
+				sessionId: "session-123",
+				id: "pending-1",
+				prompt: "queued prompt",
+				delivery: "queue",
+				attachmentCount: 0,
+			},
+		} as CoreSessionEvent
+
+		await coordinator.handleSessionEvent(event)
+
+		expect(options.settleRecoveredAutoRetry).toHaveBeenCalledOnce()
+	})
+
 	it("marks a submitted queued prompt as a new streaming turn", async () => {
 		const message: ClineMessage = { ts: 1, type: "say", say: "user_feedback", text: "queued prompt" }
 		const { coordinator, options } = makeCoordinator({
@@ -495,6 +582,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		postStateToWebview: vi.fn().mockResolvedValue(undefined),
 		setTurnPhase: vi.fn(),
 		getTurnPhase: vi.fn(() => input.turnPhase ?? "streaming"),
+		settleRecoveredAutoRetry: vi.fn(),
 		captureProviderApiError: vi.fn(),
 		beginProviderFailureTelemetryTurn: vi.fn(),
 		translateSessionEvent: vi.fn(() => input.translation ?? { messages: [], sessionEnded: false, turnComplete: false }),
@@ -507,6 +595,7 @@ function makeCoordinator(input: Partial<MakeCoordinatorInput> = {}) {
 		messages: SdkSessionEventCoordinatorOptions["messages"] & { appendAndEmit: ReturnType<typeof vi.fn> }
 		taskHistory: SdkSessionEventCoordinatorOptions["taskHistory"] & { updateTaskUsage: ReturnType<typeof vi.fn> }
 		postStateToWebview: ReturnType<typeof vi.fn>
+		settleRecoveredAutoRetry: ReturnType<typeof vi.fn>
 		captureProviderApiError: ReturnType<typeof vi.fn>
 		beginProviderFailureTelemetryTurn: ReturnType<typeof vi.fn>
 		translateSessionEvent: ReturnType<typeof vi.fn>

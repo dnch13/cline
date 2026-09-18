@@ -646,6 +646,9 @@ export class Controller {
 			// Deferred "error"-phase commits when a retry may still claim the failure.
 			// Fold duplicate transient-failure rows into the live recovery countdown block.
 			filterMessagesForRecovery: (messages) => this.filterDuplicateRecoveryErrors(messages),
+			// The retried/recovery turn started producing model output — release the
+			// recovery hold so the resumed process renders normally.
+			settleRecoveredAutoRetry: () => this.settleRecoveredAutoRetry(),
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
 			beginProviderFailureTelemetryTurn: () => this.beginProviderFailureTelemetryTurn(),
 		})
@@ -1499,6 +1502,14 @@ export class Controller {
 			return
 		}
 
+		// A user-driven turn (follow-up, approval answer, resume) takes over from
+		// any live recovery streak: kill the pending retry timer and settle the
+		// marker so the new turn's rows render below a plain error block instead
+		// of being held by a stale countdown. The auto-retry re-drive calls
+		// followups.askResponse directly, so it never trips this.
+		this.apiRetry?.cancel()
+		this.settleLiveAutoRecoveryMarker()
+
 		const turnStateBefore = this.turnStateTracker.get()
 
 		// Answering an ask / continuing after completion / resuming a cancelled task all kick off a
@@ -1582,6 +1593,25 @@ export class Controller {
 	 */
 	private settleLiveAutoRecoveryMarker(): void {
 		this.interactions?.settleAutoRecovery()
+	}
+
+	/**
+	 * A live auto-recovery streak's attempt PROVED itself: the retried turn is
+	 * streaming model output (text/reasoning/tool rows), or a user-driven turn
+	 * took over. Settle the marker now — not at turn completion — so the
+	 * webview immediately releases the recovery hold (every row below the
+	 * decorated error block was hidden) and stops the glyph spinner while the
+	 * process keeps working, fully visible. No-op when no streak is live; if
+	 * the attempt fails again later, the normal turn-failure path re-arms the
+	 * countdown marker and the hold re-engages.
+	 */
+	private settleRecoveredAutoRetry(): void {
+		const interactions = this.interactions
+		if (!interactions?.isAutoRecoveryActive("api") && !interactions?.isAutoRecoveryActive("mistake")) {
+			return
+		}
+		Logger.log("[ApiRetry] Recovery attempt is producing output — releasing the recovery hold")
+		interactions.settleAutoRecovery()
 	}
 
 	private settleAbandonedRetryPhase(): void {

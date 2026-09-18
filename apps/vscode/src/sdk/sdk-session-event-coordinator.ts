@@ -19,6 +19,32 @@ function normalizeModelId(modelId: string): string {
 
 type AgentFailureTelemetry = Pick<ProviderFailureTelemetry, "sessionId" | "error" | "errorType"> | undefined
 
+/**
+ * Say types that PROVE a retried/recovery turn is healthy: model output is
+ * streaming, so the provider accepted the request and the attempt recovered.
+ * Deliberately excludes:
+ * - "api_req_started" — emitted when the request goes out, BEFORE success is
+ *   known (the attempt can still fail right after it);
+ * - "error" — the failure signal itself;
+ * - "compaction"/"info"/"hook_status" — turn bookkeeping that precedes any
+ *   model output;
+ * - "user_feedback" and friends — user-side rows, not recovery evidence.
+ */
+const RECOVERY_PROVING_SAYS = new Set<string>([
+	"text",
+	"reasoning",
+	"tool",
+	"command",
+	"use_mcp_server",
+	"use_subagents",
+	"completion_result",
+])
+
+/** A translated row that proves a live auto-recovery streak's attempt recovered. */
+function isRecoveryProvingRow(message: ClineMessage): boolean {
+	return message.type === "say" && message.say !== undefined && RECOVERY_PROVING_SAYS.has(message.say)
+}
+
 export interface SdkSessionEventCoordinatorOptions {
 	messageTranslatorState: MessageTranslatorState
 	sessions: SdkSessionLifecycle
@@ -43,6 +69,17 @@ export interface SdkSessionEventCoordinatorOptions {
 	 * block instead of flooding the chat with error rows. Optional for tests.
 	 */
 	filterMessagesForRecovery?: (messages: ClineMessage[]) => ClineMessage[]
+	/**
+	 * Settle a live auto-recovery marker once the recovery attempt proves
+	 * itself: the first assistant-produced row (streamed text/reasoning, a tool
+	 * call, a completion result) of the retried turn means the provider
+	 * accepted the request and the model is responding — the streak recovered.
+	 * Called BEFORE the proving rows are appended so a single state post
+	 * carries both the settled marker and the newly-visible rows. Also called
+	 * when a user-queued prompt starts its own turn (user takeover supersedes
+	 * the streak). Optional for tests.
+	 */
+	settleRecoveredAutoRetry?: () => void
 	captureProviderApiError?: (event: ProviderFailureTelemetry) => void
 	beginProviderFailureTelemetryTurn?: () => void
 }
@@ -125,6 +162,9 @@ export class SdkSessionEventCoordinator {
 			this.options.messageTranslatorState.clearTurnOutcome()
 			this.options.sessions.setRunning(true)
 			this.options.setTurnPhase?.(PROVIDER_FAILURE_PHASE.STREAMING)
+			// A queued prompt's turn is user-driven: it supersedes any live
+			// recovery streak, so the marker must settle before its rows render.
+			this.options.settleRecoveredAutoRetry?.()
 		}
 		const zeroCostPromise = this.zeroCostForFreeClineModel(result)
 		if (zeroCostPromise) {
@@ -143,6 +183,15 @@ export class SdkSessionEventCoordinator {
 			const filtered = this.options.filterMessagesForRecovery?.(result.messages) ?? result.messages
 			result.messages = filtered
 			if (filtered.length > 0) {
+				// The retried attempt is producing model output — the streak
+				// recovered. Settle the marker BEFORE appending so the hold (which
+				// hides every row below the decorated error block) and the glyph
+				// spinner release in the same state post that reveals these rows.
+				// No-op when no streak is live; a later re-failure re-arms the
+				// countdown marker through the normal turn-failure path.
+				if (this.options.settleRecoveredAutoRetry && filtered.some(isRecoveryProvingRow)) {
+					this.options.settleRecoveredAutoRetry()
+				}
 				this.options.messages.appendAndEmit(filtered, event)
 			}
 		}

@@ -248,9 +248,11 @@ export function findActiveRecoveryDecoration(messages: ClineMessage[], phase?: T
  * divider, bookkeeping — and NONE of them may render below the frozen error
  * block while the streak's outcome is unknown. The caller (see
  * applyActiveRecoveryHold) gates this on the marker's liveness alone: the hold
- * spans the countdown AND the in-flight retry, releasing only when the marker
- * settles (an attempt finally succeeded). Rows after a settled marker (or with
- * no marker at all) are historical and stay.
+ * spans the countdown AND the retry's connection phase, releasing the moment
+ * the marker settles — which the backend does as soon as the retried attempt
+ * PROVES itself (first streamed model output), not only at turn completion, so
+ * a recovered process renders fully while it keeps working. Rows after a
+ * settled marker (or with no marker at all) are historical and stay.
  */
 export function hideRowsAfterActiveRecovery(messages: ClineMessage[], targetTs: number): ClineMessage[] {
 	const targetIndex = messages.findIndex((message) => message.ts === targetTs)
