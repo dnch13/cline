@@ -1436,10 +1436,12 @@ describe("createContextCompactionPrepareTurn", () => {
 		expect(explicitWins.maxOutputTokens).toBe(6_000);
 	});
 
-	it("skips with a diagnostic warning when the summarizer only produced reasoning output", async () => {
+	it("falls back to basic compaction when the summarizer only produced reasoning output", async () => {
 		// Repro for CLINE-2911: a reasoning model can spend the entire output
 		// budget thinking. Reasoning chunks are discarded, so no summary text
-		// arrives and compaction is skipped — that skip must be diagnosable.
+		// arrives — and agentic compaction must fall back to deterministic
+		// basic compaction instead of skipping: a skip re-runs the same giant
+		// summarize every turn on big conversations (the summarize/skip loop).
 		const logger = { debug: vi.fn(), log: vi.fn() };
 		const emitStatusNotice = vi.fn();
 		createHandlerMock.mockReturnValue({
@@ -1503,13 +1505,10 @@ describe("createContextCompactionPrepareTurn", () => {
 			emitStatusNotice,
 		});
 
-		expect(result).toBeUndefined();
-		expect(emitStatusNotice).toHaveBeenCalledWith(
-			"auto-compaction-skipped",
-			expect.objectContaining({ phase: "skipped" }),
-		);
+		// The fallback compacted deterministically instead of skipping.
+		expect(result?.messages).toBeDefined();
 		expect(logger.log).toHaveBeenCalledWith(
-			"Skipped agentic compaction: summarizer returned no summary text",
+			"Agentic summarizer returned no summary text; falling back to basic compaction",
 			expect.objectContaining({
 				severity: "warn",
 				reasoningChars: "thinking about the summary...".length,
@@ -1845,6 +1844,79 @@ describe("createContextCompactionPrepareTurn", () => {
 				errorMessage: providerError.message,
 			}),
 		);
+	});
+
+	it("times out a hung summarizer stream and falls back to basic compaction", async () => {
+		// A provider that never closes the summarize stream (dropped connection
+		// on the same flaky network that caused the failure being recovered)
+		// must not stall prepareTurn forever: after SUMMARY_STREAM_TIMEOUT_MS
+		// the stream is abandoned and deterministic basic compaction runs.
+		vi.useFakeTimers();
+		try {
+			createHandlerMock.mockReturnValue({
+				createMessage: vi.fn(() => {
+					async function* hang(): AsyncGenerator<FakeChunk> {
+						yield { type: "text", id: "hung", text: "partial summary" };
+						// Never resolves and never ends: simulates a dead stream.
+						await new Promise<never>(() => {});
+					}
+					return hang();
+				}),
+			});
+			const log = vi.fn();
+			const messages: LlmsProviders.Message[] = [
+				{ role: "user", content: "Original task" },
+				{ role: "assistant", content: `Old answer ${"x".repeat(500)}` },
+				{ role: "user", content: "Latest request" },
+			];
+			const prepareTurn = createContextCompactionPrepareTurn({
+				providerId: "anthropic",
+				modelId: "mock-model",
+				providerConfig: {
+					providerId: "anthropic",
+					modelId: "mock-model",
+				} as LlmsProviders.ProviderConfig,
+				compaction: {
+					enabled: true,
+					strategy: "agentic",
+					preserveRecentTokens: 1,
+				},
+				logger: { debug: vi.fn(), log },
+			});
+
+			const pending = prepareTurn?.({
+				agentId: "agent-1",
+				conversationId: "conv-1",
+				parentAgentId: null,
+				iteration: 1,
+				abortSignal: new AbortController().signal,
+				systemPrompt: "You are helpful.",
+				tools: [],
+				messages,
+				apiMessages: messages,
+				model: {
+					id: "mock-model",
+					provider: "anthropic",
+					info: { id: "mock-model", maxInputTokens: 10 },
+				},
+			});
+
+			// Advance past the summarize deadline; the run completes via basic.
+			const result = await vi
+				.advanceTimersByTimeAsync(120_500)
+				.then(() => pending);
+
+			expect(result?.messages).toBeDefined();
+			expect(log).toHaveBeenCalledWith(
+				"Agentic compaction failed; falling back to basic compaction",
+				expect.objectContaining({
+					severity: "warn",
+					errorName: "CompactionSummaryTimeoutError",
+				}),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not fall back to basic compaction when agentic compaction is cancelled", async () => {

@@ -7,6 +7,7 @@ import type {
 	CoreCompactionSummarizerConfig,
 } from "../../types/config";
 import type { ProviderConfig } from "../../types/provider-settings";
+import { runBasicCompaction } from "./basic-compaction";
 import {
 	type BudgetProjectionResult,
 	buildBudgetProjection,
@@ -27,6 +28,48 @@ import {
 } from "./compaction-shared";
 
 const MIN_AGENTIC_SUMMARY_INPUT_TOKENS = 1_024;
+
+/**
+ * Hard ceiling on a single summarizer stream. The summarizer request rides the
+ * same flaky provider connection that likely triggered the turn failure this
+ * compaction is recovering from; without a deadline a hung connection (or a
+ * provider that never closes the stream) stalls `prepareTurn` forever — the
+ * task sits on "compacting" indefinitely. On timeout the error propagates and
+ * compaction.ts falls back to deterministic basic compaction.
+ */
+const SUMMARY_STREAM_TIMEOUT_MS = 120_000;
+
+export class CompactionSummaryTimeoutError extends Error {
+	constructor(timeoutMs: number) {
+		super(
+			`Compaction summarizer stream timed out after ${Math.round(timeoutMs / 1000)}s`,
+		);
+		this.name = "CompactionSummaryTimeoutError";
+	}
+}
+
+async function nextChunkWithTimeout<T>(
+	iterator: AsyncIterator<T>,
+	deadline: number,
+	timeoutMs: number,
+): Promise<IteratorResult<T>> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			iterator.next(),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(
+					() => reject(new CompactionSummaryTimeoutError(timeoutMs)),
+					Math.max(0, deadline - Date.now()),
+				);
+			}),
+		]);
+	} finally {
+		if (timer !== undefined) {
+			clearTimeout(timer);
+		}
+	}
+}
 
 function resolveProviderMaxInputTokens(
 	providerConfig: ProviderConfig,
@@ -76,24 +119,46 @@ async function generateSummary(options: {
 	let text = "";
 	let reasoningChars = 0;
 	let incompleteReason: string | undefined;
-	for await (const chunk of handler.createMessage(
-		"Summarize the provided coding session into a concise continuation note with detailed next steps.",
-		[{ role: "user", content: options.request }],
-	)) {
-		if (chunk.type === "text") {
-			text += chunk.text;
-			continue;
-		}
-		if (chunk.type === "reasoning") {
-			reasoningChars += chunk.reasoning?.length ?? 0;
-			continue;
-		}
-		if (chunk.type === "done") {
-			if (!chunk.success && chunk.error) {
-				throw new Error(chunk.error);
+	const iterator = handler
+		.createMessage(
+			"Summarize the provided coding session into a concise continuation note with detailed next steps.",
+			[{ role: "user", content: options.request }],
+		)
+		[Symbol.asyncIterator]();
+	// One overall deadline for the whole stream: a provider that drips a chunk
+	// every 119s must not extend the wait forever. On any timeout the stream is
+	// closed best-effort and the timeout error propagates, so callers can fall
+	// back to deterministic basic compaction.
+	const deadline = Date.now() + SUMMARY_STREAM_TIMEOUT_MS;
+	try {
+		while (true) {
+			const next = await nextChunkWithTimeout(
+				iterator,
+				deadline,
+				SUMMARY_STREAM_TIMEOUT_MS,
+			);
+			if (next.done) {
+				break;
 			}
-			incompleteReason = chunk.incompleteReason ?? incompleteReason;
+			const chunk = next.value;
+			if (chunk.type === "text") {
+				text += chunk.text;
+				continue;
+			}
+			if (chunk.type === "reasoning") {
+				reasoningChars += chunk.reasoning?.length ?? 0;
+				continue;
+			}
+			if (chunk.type === "done") {
+				if (!chunk.success && chunk.error) {
+					throw new Error(chunk.error);
+				}
+				incompleteReason = chunk.incompleteReason ?? incompleteReason;
+			}
 		}
+	} catch (error) {
+		void iterator.return?.(undefined as never)?.catch(() => {});
+		throw error;
 	}
 	options.logger?.debug("Generated compaction summary", {
 		outputChars: text.length,
@@ -258,7 +323,7 @@ export async function runAgenticCompaction(options: {
 	const rawSummary = summaryResult.text;
 	if (!rawSummary) {
 		options.logger?.log(
-			"Skipped agentic compaction: summarizer returned no summary text",
+			"Agentic summarizer returned no summary text; falling back to basic compaction",
 			{
 				severity: "warn",
 				summarizerProviderId: summarizerProviderConfig.providerId,
@@ -272,7 +337,18 @@ export async function runAgenticCompaction(options: {
 						: "empty_response",
 			},
 		);
-		return undefined;
+		// A summarizer that cannot produce text (reasoning consumed the output
+		// budget, or the provider answered empty) must not leave the pipeline
+		// empty-handed: the conversation is over the compaction trigger, so
+		// returning undefined makes the NEXT turn re-run the same giant
+		// summarize on an identical transcript — big conversations stall in a
+		// summarize/skip loop that looks hung and costs one huge request per
+		// turn. Basic compaction is deterministic and bounded.
+		return runBasicCompaction({
+			context: options.context,
+			estimateMessageTokens: options.estimateMessageTokens,
+			logger: options.logger,
+		});
 	}
 
 	const summary = ensureFilesSection(rawSummary, fileOps);

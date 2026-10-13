@@ -87,6 +87,14 @@ export class SdkFollowupCoordinator {
 			return
 		}
 
+		// Cancellation may already be flipped (e.g. the user cancelled during the
+		// countdown before this re-drive dispatched): do not even enter the
+		// exclusive boundary.
+		if (isCancelled?.()) {
+			Logger.log("[SdkController] askResponse: Follow-up cancelled before send")
+			return
+		}
+
 		await this.options.runExclusive(async () => {
 			if (isCancelled?.()) {
 				Logger.log("[SdkController] askResponse: Follow-up cancelled before send")

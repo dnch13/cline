@@ -1623,6 +1623,13 @@ export class Controller {
 			if (message.type === "say" && message.say === "api_req_started") {
 				return !message.text?.includes('"streamingFailedMessage"')
 			}
+			if (message.type === "say" && message.say === "error") {
+				// Failures of RETRIED attempts arrive through the event stream
+				// as error rows; fold them into the streak's decorated error
+				// block (which landed before the streak armed) instead of
+				// stacking one block per failed attempt.
+				return false
+			}
 			return true
 		})
 	}
@@ -1668,6 +1675,16 @@ export class Controller {
 			return
 		}
 		Logger.log("[ApiRetry] Recovery attempt is producing output — releasing the recovery hold")
+		if (interactions.isAutoRecoveryActive("api")) {
+			// The retried turn proved itself by streaming output, so the failure
+			// that armed this streak is fully recovered. Reset the Fibonacci
+			// schedule now — a failure much later in the same long turn (or a
+			// future streak) must start fresh at attempt 1 (3s) instead of
+			// climbing a counter that survived earlier successful recoveries.
+			// Safe here: the re-drive already dispatched, so no scheduled timer
+			// or in-flight send exists for the bumped generation to invalidate.
+			this.apiRetry?.reset()
+		}
 		interactions.settleAutoRecovery()
 	}
 
@@ -1744,24 +1761,39 @@ export class Controller {
 				failurePhase: PROVIDER_FAILURE_PHASE.STREAMING,
 			})
 			const classification = this.classifyAutoRetryFailure(outcome)
-			// The failure row MUST land before the retry marker: the webview
-			// binds the marker to the nearest PRECEDING error block
-			// (findActiveRecoveryDecoration), so a marker emitted first would
-			// reach back to a previous streak's error — decorating (and
-			// hold-truncating the chat at) ancient history. (Status is derived
-			// from the classification; in the rare retryable-but-refused race
-			// the phase settle below corrects the UI in the same state post.)
-			this.emitAgentError(sessionId, `Agent error: ${errorMessage}`, classification.retryable ? "running" : "error")
+			const markerLive = this.interactions?.isAutoRecoveryActive("api") === true
+			if (!markerLive) {
+				// The failure row MUST land before the retry marker: the webview
+				// binds the marker to the nearest PRECEDING error block
+				// (findActiveRecoveryDecoration), so a marker emitted first would
+				// reach back to a previous streak's error — decorating (and
+				// hold-truncating the chat at) ancient history. (Status is derived
+				// from the classification; in the rare retryable-but-refused race
+				// the phase settle below corrects the UI in the same state post.)
+				this.emitAgentError(sessionId, `Agent error: ${errorMessage}`, classification.retryable ? "running" : "error")
+			}
 			const willAutoRetry = classification.retryable
 				? (this.apiRetry?.handleSendError(outcome.error, sessionId, classification.retryAfterSeconds) ?? false)
 				: false
 			if (!willAutoRetry) {
 				// A permanent failure (or dead session) ends any live streak:
-				// settle the marker so its block reverts to the plain glyph.
+				// reset the schedule so the counter cannot leak into a future
+				// streak, and settle the marker so its block reverts to the
+				// plain glyph.
+				this.apiRetry?.reset()
 				this.settleLiveAutoRecoveryMarker()
+				if (markerLive) {
+					// The streak just died permanently: emit the final failure
+					// row (the streak's decorated block still says "running").
+					this.emitAgentError(sessionId, `Agent error: ${errorMessage}`, "error")
+				}
 				// Without a retry the phase settles here; with one, the re-drive owns it.
 				this.turnStateTracker.set("error")
 			}
+			// A repeat transient failure inside a live streak emits nothing:
+			// the countdown marker re-arms in place and shows the attempt
+			// number, so repeated failures render as ONE block instead of
+			// stacking a row per attempt.
 		} else {
 			// Already rendered and captured; only the retry policy applies.
 			const classification = this.classifyAutoRetryFailure(outcome)
@@ -1769,7 +1801,9 @@ export class Controller {
 				this.apiRetry?.handleSendError(outcome.error, sessionId, classification.retryAfterSeconds)
 			} else {
 				// A permanent event-delivered failure (e.g. the retried attempt
-				// hit an auth error) ends any live streak: settle the marker.
+				// hit an auth error) ends any live streak: reset the schedule
+				// and settle the marker.
+				this.apiRetry?.reset()
 				this.settleLiveAutoRecoveryMarker()
 			}
 		}

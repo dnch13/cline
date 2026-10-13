@@ -137,6 +137,19 @@ export class SdkMessageCoordinator {
 	 * - Updates the last `api_req_started` with a cancel reason if it has no cost
 	 */
 	finalizeMessagesForSave(messages: ClineMessage[]): ClineMessage[] {
+		// Find the LAST api_req_started once with a single reverse scan. The
+		// previous per-message `slice(index + 1).some(...)` rescanned the whole
+		// remainder of the transcript for every request row — O(k·n) on big
+		// conversations (one api_req_started per request), dominating task
+		// open/save latency for multi-thousand-message transcripts.
+		let lastApiReqStartedIndex = -1
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const message = messages[i]
+			if (message.type === "say" && message.say === "api_req_started") {
+				lastApiReqStartedIndex = i
+				break
+			}
+		}
 		return messages.map((msg, index) => {
 			const updated = { ...msg }
 
@@ -144,15 +157,12 @@ export class SdkMessageCoordinator {
 				delete updated.partial
 			}
 
-			if (updated.type === "say" && updated.say === "api_req_started") {
+			if (updated.type === "say" && updated.say === "api_req_started" && index === lastApiReqStartedIndex) {
 				try {
 					const info: ClineApiReqInfo = JSON.parse(updated.text || "{}")
 					if (info.cost === undefined && info.cancelReason === undefined) {
-						const isLast = !messages.slice(index + 1).some((m) => m.type === "say" && m.say === "api_req_started")
-						if (isLast) {
-							info.cancelReason = "user_cancelled"
-							updated.text = JSON.stringify(info)
-						}
+						info.cancelReason = "user_cancelled"
+						updated.text = JSON.stringify(info)
 					}
 				} catch {
 					// Ignore parse errors from legacy or malformed messages.

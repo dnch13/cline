@@ -141,6 +141,18 @@ describe("classifyFailureForRetry", () => {
 			}
 		})
 
+		it("retries a flattened transient failure whose body merely mentions billing", () => {
+			// A bare "billing" substring shows up inside transient internal-error
+			// bodies ("billing service temporarily unavailable" on a 500 with no
+			// typed metadata); the run must keep going, not stop permanently.
+			for (const message of [
+				"billing service temporarily unavailable",
+				"internal error in billing pipeline, please retry",
+			]) {
+				expect(classifyFailureForRetry({ error: new Error(message) })).toEqual({ retryable: true })
+			}
+		})
+
 		it("does not retry flattened request-shape validation failures (content-block type rejections)", () => {
 			// Anthropic-compatible gateways (z.ai et al.) flatten 400 validation
 			// verdicts into plain text with no status metadata. The payload

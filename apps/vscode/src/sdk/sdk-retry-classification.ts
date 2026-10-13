@@ -92,7 +92,6 @@ const CREDENTIAL_PATTERNS = [
 const BILLING_PATTERNS = [
 	/\binsufficient[\s_-]?quota\b/i,
 	/\bexceeded[\s_-]*your[\s_-]*current[\s_-]*quota\b/i,
-	/\bbilling\b/i,
 	/\bcredit[\s_-]*balance\b/i,
 	/\bpayment[\s_-]*(?:required|failed|declined)\b/i,
 	/\bupgrade[\s_-]*your[\s_-]*plan\b/i,

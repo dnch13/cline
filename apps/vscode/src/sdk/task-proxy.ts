@@ -71,17 +71,24 @@ interface ClineMessageChange {
  */
 export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents> {
 	private messages: ClineMessage[] = []
+	/** Index of message `ts` -> array position for O(1) update-in-place lookups. */
+	private readonly indexByTs = new Map<number, number>()
 
 	/** Add or update messages from a session event.
 	 *  If a message with the same `ts` already exists, update it in-place
 	 *  (this handles partial→final streaming updates). Otherwise append.
 	 *  This prevents duplicate messages when both partial message stream
 	 *  and state updates carry the same content.
+	 *
+	 *  Lookup is O(1) via `indexByTs`: opening a multi-thousand-message task
+	 *  feeds the whole transcript through here in one bulk call, and a linear
+	 *  `findIndex` per message made that O(n²) — the dominant cost of opening
+	 *  large conversations.
 	 */
 	addMessages(messages: ClineMessage[]): void {
 		for (const message of messages) {
-			const existingIndex = this.messages.findIndex((m) => m.ts === message.ts)
-			if (existingIndex !== -1) {
+			const existingIndex = this.indexByTs.get(message.ts)
+			if (existingIndex !== undefined && this.messages[existingIndex]?.ts === message.ts) {
 				// Update existing message in-place (e.g., partial=true → partial=false)
 				this.messages[existingIndex] = message
 				this.emit("clineMessagesChanged", {
@@ -91,6 +98,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 					message,
 				})
 			} else {
+				this.indexByTs.set(message.ts, this.messages.length)
 				this.messages.push(message)
 				this.emit("clineMessagesChanged", { type: "add", messages: this.messages, message })
 			}
@@ -105,11 +113,16 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	/** Clear all messages (e.g., on task clear) */
 	clear(): void {
 		this.messages = []
+		this.indexByTs.clear()
 	}
 
 	/** Replace the full message list, preserving the classic set-change event. */
 	replaceMessages(messages: ClineMessage[]): void {
 		this.messages = [...messages]
+		this.indexByTs.clear()
+		for (let i = 0; i < this.messages.length; i++) {
+			this.indexByTs.set(this.messages[i].ts, i)
+		}
 		this.emit("clineMessagesChanged", { type: "set", messages: this.messages })
 	}
 }

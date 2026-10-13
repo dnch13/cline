@@ -225,9 +225,11 @@ describe("SdkSessionLifecycle", () => {
 		const lifecycle = makeLifecycle({ onDidBecomeIdle })
 		await lifecycle.startNewSession({} as StartInput)
 
-		await lifecycle.fireAndForgetSend(sdkHost as any, "session-123", "hello")
+		// fire-and-forget: the failure and the idle transition land
+		// asynchronously after the call returns.
+		lifecycle.fireAndForgetSend(sdkHost as any, "session-123", "hello")
+		await vi.waitFor(() => expect(onDidBecomeIdle).toHaveBeenCalledOnce())
 
-		expect(onDidBecomeIdle).toHaveBeenCalledOnce()
 		expect(lifecycle.getActiveSession()?.isRunning).toBe(false)
 	})
 

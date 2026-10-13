@@ -306,6 +306,9 @@ describe("SDK remote-config coordination", () => {
 				initTask: vi.fn(async () => "task-id"),
 				followups: { askResponse: vi.fn(async () => {}) },
 				cancelTask: vi.fn(async () => {}),
+				// askResponse settles any live recovery marker before driving the funnel.
+				settleLiveAutoRecoveryMarker: vi.fn(),
+				apiRetry: { cancel: vi.fn() },
 				askResponse(prompt?: string, images?: string[], files?: string[]) {
 					return SdkController.prototype.askResponse.call(controller as never, prompt, images, files)
 				},
@@ -639,6 +642,8 @@ describe("turn failure boundary (handleTurnSettled)", () => {
 		})
 
 		expect(controller.apiRetry.handleSendError).not.toHaveBeenCalled()
+		// The streak is over — its counter must not leak into a future streak.
+		expect(controller.apiRetry.reset).toHaveBeenCalledOnce()
 		expect(controller.turnStateTracker.set).toHaveBeenCalledWith("error")
 		expect(controller.emitAgentError).toHaveBeenCalledWith("session-123", "Agent error: prompt is too long", "error")
 	})
@@ -705,6 +710,59 @@ describe("turn failure boundary (handleTurnSettled)", () => {
 		expect(order).toEqual(["error-row", "schedule"])
 	})
 
+	it("folds a repeat send rejection into the live streak instead of stacking another error row", async () => {
+		// Failure #2+ of a streak: the marker is already armed on the first
+		// failure's error block, so the countdown re-arms in place — no new
+		// row per failed attempt (the "3 stacked errors" bug).
+		const controller = makeBoundaryFake({
+			// A marker is live from failure #1.
+			interactions: {
+				settleAutoRecovery: vi.fn(),
+				resetMistakeEscalation: vi.fn(),
+				isAutoRecoveryActive: vi.fn((kind: string) => kind === "api"),
+				beginAutoRecoveryCountdown: vi.fn(),
+				markAutoRecoveryRetrying: vi.fn(),
+			},
+		})
+		const error = new Error("socket hang up again")
+
+		await privateControllerProto.handleTurnSettled.call(controller as never, "session-123", {
+			status: "failed",
+			error,
+			source: "send_rejection",
+		})
+
+		expect(controller.apiRetry.handleSendError).toHaveBeenCalledExactlyOnceWith(error, "session-123", undefined)
+		expect(controller.emitAgentError).not.toHaveBeenCalled()
+		expect(controller.turnStateTracker.set).not.toHaveBeenCalledWith("error")
+	})
+
+	it("emits a final error row and resets the schedule when a permanent failure kills a live streak", async () => {
+		const controller = makeBoundaryFake({
+			classifyAutoRetryFailure: vi.fn(() => ({ retryable: false })),
+			interactions: {
+				settleAutoRecovery: vi.fn(),
+				resetMistakeEscalation: vi.fn(),
+				isAutoRecoveryActive: vi.fn((kind: string) => kind === "api"),
+				beginAutoRecoveryCountdown: vi.fn(),
+				markAutoRecoveryRetrying: vi.fn(),
+			},
+		})
+
+		await privateControllerProto.handleTurnSettled.call(controller as never, "session-123", {
+			status: "failed",
+			error: new Error("Invalid API key"),
+			source: "send_rejection",
+		})
+
+		// The streak's decorated block still says "running" — the terminal
+		// reason needs its own row, and the counter must not leak.
+		expect(controller.emitAgentError).toHaveBeenCalledWith("session-123", "Agent error: Invalid API key", "error")
+		expect(controller.apiRetry.reset).toHaveBeenCalledOnce()
+		expect(controller.interactions.settleAutoRecovery).toHaveBeenCalledOnce()
+		expect(controller.turnStateTracker.set).toHaveBeenCalledWith("error")
+	})
+
 	it("settles a live recovery marker when a permanent send rejection ends the streak", async () => {
 		const controller = makeBoundaryFake({
 			classifyAutoRetryFailure: vi.fn(() => ({ retryable: false })),
@@ -731,6 +789,43 @@ describe("turn failure boundary (handleTurnSettled)", () => {
 		})
 
 		expect(controller.interactions.settleAutoRecovery).toHaveBeenCalledOnce()
+	})
+})
+
+describe("filterDuplicateRecoveryErrors folds retried-attempt failure rows", () => {
+	const rows = [
+		{ type: "say", say: "error", text: "Agent error: socket hang up", ts: 1, partial: false },
+		{ type: "say", say: "text", text: "partial retry output", ts: 2, partial: true },
+	] as never[]
+
+	it("drops event-stream error rows while the api streak is live", () => {
+		const controller = {
+			interactions: { isAutoRecoveryActive: vi.fn(() => true) },
+		}
+
+		const filtered = (
+			SdkController.prototype as unknown as {
+				filterDuplicateRecoveryErrors: (this: never, messages: never[]) => never[]
+			}
+		).filterDuplicateRecoveryErrors.call(controller as never, rows)
+
+		// Only the proving output row survives; the retried attempt's failure
+		// folds into the streak's decorated block (which landed pre-arm).
+		expect(filtered).toEqual([rows[1]])
+	})
+
+	it("keeps error rows when no streak is live", () => {
+		const controller = {
+			interactions: { isAutoRecoveryActive: vi.fn(() => false) },
+		}
+
+		const filtered = (
+			SdkController.prototype as unknown as {
+				filterDuplicateRecoveryErrors: (this: never, messages: never[]) => never[]
+			}
+		).filterDuplicateRecoveryErrors.call(controller as never, rows)
+
+		expect(filtered).toEqual(rows)
 	})
 })
 
@@ -789,6 +884,39 @@ describe("recovered auto-retry releases the hold (settleRecoveredAutoRetry)", ()
 
 		privateControllerProto.settleRecoveredAutoRetry.call(controller as never)
 
+		expect(controller.interactions.settleAutoRecovery).toHaveBeenCalledOnce()
+	})
+
+	it("resets the fibonacci schedule when an api streak recovers, so later failures start at attempt 1", () => {
+		// A recovery that streams output has proven itself: the streak's
+		// backoff counter must not survive into the next failure (the
+		// "counter keeps climbing after successful recoveries" bug).
+		const controller = {
+			apiRetry: { reset: vi.fn() },
+			interactions: {
+				isAutoRecoveryActive: vi.fn((kind: string) => kind === "api"),
+				settleAutoRecovery: vi.fn(),
+			},
+		}
+
+		privateControllerProto.settleRecoveredAutoRetry.call(controller as never)
+
+		expect(controller.apiRetry.reset).toHaveBeenCalledOnce()
+		expect(controller.interactions.settleAutoRecovery).toHaveBeenCalledOnce()
+	})
+
+	it("does not touch the api schedule when only a mistake streak is live", () => {
+		const controller = {
+			apiRetry: { reset: vi.fn() },
+			interactions: {
+				isAutoRecoveryActive: vi.fn((kind: string) => kind === "mistake"),
+				settleAutoRecovery: vi.fn(),
+			},
+		}
+
+		privateControllerProto.settleRecoveredAutoRetry.call(controller as never)
+
+		expect(controller.apiRetry.reset).not.toHaveBeenCalled()
 		expect(controller.interactions.settleAutoRecovery).toHaveBeenCalledOnce()
 	})
 
