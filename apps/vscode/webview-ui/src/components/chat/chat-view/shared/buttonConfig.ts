@@ -5,15 +5,8 @@ import { findActiveRecoveryDecoration } from "../utils/messageUtils"
 /**
  * Button action types that determine the behavior
  */
-export type ButtonActionType =
-	| "approve" // Send yesButtonClicked
-	| "reject" // Send noButtonClicked
-	| "proceed" // Send messageResponse or yesButtonClicked
-	| "proceed_while_running" // Detach the running foreground terminal command
-	| "new_task" // Start a new task
-	| "cancel" // Cancel streaming
-	| "utility" // Execute utility function (condense, report_bug)
-	| "retry" // Retry the last action
+export type SubmittingButtonActionType = "approve" | "reject" | "proceed"
+export type ButtonActionType = SubmittingButtonActionType | "proceed_while_running" | "new_task" | "cancel" | "utility" | "retry"
 
 /**
  * Button configuration for different message states
@@ -346,9 +339,7 @@ function isInertStatusMessage(message: ClineMessage): boolean {
 		}
 	}
 
-	return ["api_req_finished", "deleted_api_reqs", "mcp_server_request_started", "subagent_usage", "task_progress"].includes(
-		message.say || "",
-	)
+	return ["api_req_finished", "deleted_api_reqs", "mcp_server_request_started", "subagent_usage"].includes(message.say || "")
 }
 
 /**
@@ -444,7 +435,7 @@ export function getButtonConfigFromState(
 	foregroundCommandRunning = false,
 ): ButtonConfig {
 	if (turnState) {
-		const anchored = turnState.anchorTs !== undefined ? messages.find((m) => m.ts === turnState.anchorTs) : undefined
+		const anchored = getTurnStateMessage(messages, turnState)
 		// A live auto-recovery marker means the streak is still being retried:
 		// transient per-attempt phase blinks must not change the footer buttons.
 		// Deliberately NOT phase-gated (unlike the glyph decoration in ChatView):
@@ -456,4 +447,20 @@ export function getButtonConfigFromState(
 		return buttonsForPhase(turnState, anchored, foregroundCommandRunning, autoRecoveryLive)
 	}
 	return getButtonConfigForMessages(messages, mode)
+}
+
+export function getTurnStateMessage(messages: ClineMessage[], turnState: TurnState | undefined): ClineMessage | undefined {
+	return turnState?.anchorTs !== undefined ? messages.find((message) => message.ts === turnState.anchorTs) : undefined
+}
+
+export function isOptionsAskActive(
+	message: ClineMessage,
+	turnState: TurnState | undefined,
+	isLast: boolean,
+	lastModifiedMessage: ClineMessage | undefined,
+): boolean {
+	if (turnState) {
+		return turnState.phase === "awaiting_followup" && turnState.anchorTs === message.ts
+	}
+	return isLast && lastModifiedMessage?.ask === message.ask
 }

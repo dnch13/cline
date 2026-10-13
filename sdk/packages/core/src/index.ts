@@ -6,6 +6,7 @@
 
 export * as Llms from "@cline/llms";
 export {
+	buildClineClientHeaders,
 	ClineFreeModelLimitError,
 	ClineNotSubscribedError,
 	ClineOrgIndividualInferenceSubscriptionError,
@@ -53,7 +54,6 @@ export type {
 	ClineAccountActionRequest,
 	ConnectorHookEvent,
 	ContentBlock,
-	FeatureFlag,
 	FeatureFlagPayload,
 	FeatureFlagsAndPayloads,
 	FeatureFlagsContext,
@@ -109,6 +109,7 @@ export {
 	createTool,
 	emptyWorkspaceManifest,
 	FEATURE_FLAGS,
+	FeatureFlag,
 	FeatureFlagDefaultValue,
 	formatDisplayUserInput,
 	noopBasicLogger,
@@ -203,6 +204,7 @@ export type {
 	OcaTokenResolution,
 } from "./auth/types";
 export { ClineCore } from "./ClineCore";
+export { toClineCoreStartInput } from "./cline-core/start-input";
 export type {
 	ClineAutomationEventIngressResult,
 	ClineAutomationEventLog,
@@ -239,22 +241,34 @@ export type {
 	LoadAgentPluginPackagesOptions,
 	LoadedAgentPluginPackage,
 	ParsedAgentSkill,
+	PluginExecutionMode,
+	PluginHookErrorMode,
 	PluginInitializationFailure,
 	PluginInitializationWarning,
 	PluginLoadDiagnostics,
+	PluginRegistryOptions,
+	PluginSessionLoadInput,
+	PluginSessionLoadResult,
+	PluginStatusListener,
 	ResolveAgentPluginPathsOptions,
 } from "./extensions";
 export {
 	AGENT_PLUGINS_V1_MANIFEST_SCHEMA,
 	AGENT_PLUGINS_V1_MCP_SCHEMA,
+	CLINE_PLUGIN_BOOTSTRAP_PATH_ENV,
 	discoverPluginModulePaths,
+	formatSessionPluginIssue,
 	getPluginDisplayName,
+	getProcessPluginRegistry,
 	loadAgentPluginFromPath,
 	loadAgentPluginPackages,
 	loadAgentPluginsFromPaths,
 	loadAgentPluginsFromPathsWithDiagnostics,
+	PluginCallTimeoutError,
+	PluginRegistry,
 	parseAgentSkillMarkdown,
 	resolveAgentPluginPaths,
+	resolveAgentPluginPathsWithDiagnostics,
 	resolveAndLoadAgentPlugins,
 	resolvePluginConfigSearchPaths,
 	resolvePluginSkillDirectoriesFromPaths,
@@ -521,6 +535,7 @@ export {
 export {
 	formatRulesForSystemPrompt,
 	isRuleEnabled,
+	loadRulesForSystemPromptFromRecords,
 	mergeRulesForSystemPrompt,
 } from "./runtime/safety/rules";
 export {
@@ -532,6 +547,11 @@ export {
 	type DesktopToolApprovalOptions,
 	requestDesktopToolApproval,
 } from "./runtime/tools/tool-approval";
+export {
+	WorkerSandbox,
+	type WorkerSandboxOptions,
+} from "./runtime/tools/worker-sandbox";
+export * from "./services/cloud-handoff";
 export { listActiveConnectors } from "./services/connectors/active-connectors";
 export {
 	disableConnectorAutostart,
@@ -633,9 +653,19 @@ export type {
 export {
 	buildMcpInstallTransport,
 	installMcpServer,
+	parseMcpHeaders,
 	parseMcpInstallArgs,
 	uninstallMcpServer,
 } from "./services/mcp-install";
+export type {
+	PluginCommandResult,
+	PluginCommandService,
+	PluginSlashCommand,
+} from "./services/plugin-commands";
+export {
+	createPluginCommandService,
+	normalizePluginCommandName,
+} from "./services/plugin-commands";
 export type {
 	ParsedPluginSource,
 	PluginInstallOptions,
@@ -691,6 +721,7 @@ export {
 	deleteLocalProvider,
 	ensureCustomProvidersLoaded,
 	getLocalProviderModels,
+	getLocalTranscriptionModels,
 	isDedicatedTranscriptionModel,
 	listLocalProviders,
 	loginAndSaveLocalProviderOAuthCredentials,
@@ -737,6 +768,7 @@ export type {
 	CaptureAgentUnexpectedReasoningTokensInput,
 	CaptureCompactionExecutedProperties,
 	CaptureCompactionSkippedProperties,
+	GitSnapshotProperties,
 	TelemetryAgentIdentityProperties,
 	TelemetryAgentKind,
 	TelemetryCompactionMode,
@@ -760,6 +792,7 @@ export {
 	captureConversationTurnEvent,
 	captureDiffEditFailure,
 	captureExtensionActivated,
+	captureGitSnapshot,
 	captureHookDiscovery,
 	captureMentionFailed,
 	captureMentionSearchResults,
@@ -847,6 +880,7 @@ export {
 	projectSessionMessagesForDisplay,
 	type SessionDisplayMessage,
 } from "./session/display-messages";
+export { createForkSessionMetadata } from "./session/fork-metadata";
 export {
 	deriveSubsessionStatus,
 	makeSubSessionId,
@@ -928,6 +962,8 @@ export async function loadOpenTelemetryAdapter() {
 	return import("./services/telemetry/index.js");
 }
 export { Agent, createAgentRuntime } from "@cline/agents";
+export type { ConnectorsRequest } from "./extensions/composio/composio-meta-tools";
+export { resolveComposioConnectionStatePath } from "./extensions/composio/composio-tools-extension";
 export {
 	createCompactionStateAwarePrepareTurn,
 	createContextCompactionPrepareTurn,
@@ -939,6 +975,8 @@ export {
 	type AskQuestionExecutor,
 	type BuiltinToolAvailabilityContext,
 	CommandExitError,
+	CommandSpawnError,
+	CommandTerminationError,
 	type CreateBuiltinToolsOptions,
 	type CreateDefaultToolsOptions,
 	computePatchChanges,
@@ -984,6 +1022,9 @@ export {
 	ToolPresets,
 	truncateCommandOutput,
 } from "./extensions/tools";
+export * from "./remote/remote-environments";
+export { ensureLoginShellPath } from "./remote/shell-path";
+export { isClineAccountFeatureEnabled } from "./services/feature-flags/cline-account-feature-flags";
 export {
 	applyClineFeaturedModels,
 	type ClineRecommendedModel,

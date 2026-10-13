@@ -20,6 +20,10 @@ import { isChatWorkspacePath } from "@cline/shared/storage";
 import { CronService } from "../../cron/service/cron-service";
 import { HubScheduleCommandService } from "../../cron/service/schedule-command-service";
 import { HubScheduleService } from "../../cron/service/schedule-service";
+import {
+	getProcessPluginRegistry,
+	type PluginRegistry,
+} from "../../extensions/plugin/plugin-registry";
 import { LocalRuntimeHost } from "../../runtime/host/local-runtime-host";
 import type {
 	CommandExecutionRuntimeService,
@@ -68,6 +72,7 @@ import {
 import { handleConnectorCommand } from "./handlers/connector-handlers";
 import {
 	buildHubEvent,
+	errorReply,
 	type HubTransportContext,
 	okReply,
 	type PendingApproval,
@@ -101,6 +106,7 @@ import {
 	handleSessionRemovePendingPrompt,
 	handleSessionRestore,
 	handleSessionSearch,
+	handleSessionSteerFirstPendingPrompt,
 	handleSessionUpdate,
 	handleSessionUpdateConnection,
 	handleSessionUpdatePendingPrompt,
@@ -231,6 +237,22 @@ function parseSettingsToggleInput(payload: unknown): CoreSettingsToggleInput {
 	};
 }
 
+/** Routes plugin registry logs into the Hub's structured log stream. */
+const hubPluginLogger = {
+	debug: (message: string, metadata?: Record<string, unknown>) =>
+		logHubMessage("debug", message, metadata),
+	log: (message: string, metadata?: Record<string, unknown>) =>
+		logHubMessage(
+			metadata?.severity === "warn" || metadata?.severity === "error"
+				? "warn"
+				: "info",
+			message,
+			metadata,
+		),
+	error: (message: string, metadata?: Record<string, unknown>) =>
+		logHubMessage("error", message, metadata),
+};
+
 /** @internal Exported for unit testing fetch/runtime wiring. */
 export class HubServerTransport implements NativeHubTransport {
 	private readonly clients = new Map<string, HubClientRecord>();
@@ -269,8 +291,18 @@ export class HubServerTransport implements NativeHubTransport {
 	private runQueue?: HubRunQueue;
 	private runExecutor?: HubRunExecutor;
 	private draining = false;
+	private readonly plugins: PluginRegistry = getProcessPluginRegistry();
+	private unsubscribePluginStatus?: () => void;
 
 	constructor(readonly options: HubWebSocketServerOptions) {
+		this.plugins.setLogger(hubPluginLogger);
+		this.unsubscribePluginStatus = this.plugins.subscribe((status) => {
+			this.publish(
+				buildHubEvent("plugin.status_changed", {
+					plugin: JSON.parse(JSON.stringify(status)),
+				}),
+			);
+		});
 		this.sessionHost =
 			options.sessionHost ??
 			new LocalRuntimeHost({
@@ -358,6 +390,7 @@ export class HubServerTransport implements NativeHubTransport {
 		this.taskCommands = new HubAgendaTaskCommandService(this.tasks);
 		this.schedules = new HubScheduleService({
 			...options.scheduleOptions,
+			telemetry: options.telemetry,
 			runtimeHandlers: options.runtimeHandlers,
 			eventPublisher: (eventType, payload) => {
 				const mapped =
@@ -444,6 +477,7 @@ export class HubServerTransport implements NativeHubTransport {
 			this.cronService = new CronService({
 				runtimeHandlers: options.runtimeHandlers,
 				...options.cronOptions,
+				telemetry: options.telemetry,
 			});
 		}
 		this.sessionHost.subscribe((event: CoreSessionEvent) => {
@@ -707,6 +741,8 @@ export class HubServerTransport implements NativeHubTransport {
 	}
 
 	async stop(): Promise<void> {
+		this.unsubscribePluginStatus?.();
+		this.unsubscribePluginStatus = undefined;
 		if (this.eventLogPruneTimer) {
 			clearInterval(this.eventLogPruneTimer);
 			this.eventLogPruneTimer = undefined;
@@ -844,6 +880,8 @@ export class HubServerTransport implements NativeHubTransport {
 				return await handleSessionCompactionUpdate(this.ctx, envelope);
 			case "session.pending_prompts":
 				return await handleSessionPendingPrompts(this.ctx, envelope);
+			case "session.steer_first_pending_prompt":
+				return await handleSessionSteerFirstPendingPrompt(this.ctx, envelope);
 			case "session.update_pending_prompt":
 				return await handleSessionUpdatePendingPrompt(this.ctx, envelope);
 			case "session.remove_pending_prompt":
@@ -885,6 +923,11 @@ export class HubServerTransport implements NativeHubTransport {
 				return this.handleHubDrain(envelope);
 			case "hub.status":
 				return this.handleHubStatus(envelope);
+			case "plugins.list":
+			case "plugins.status":
+				return okReply(envelope, { plugins: this.plugins.list() });
+			case "plugins.reload":
+				return await this.handlePluginsReload(envelope);
 			case "run.abort":
 				return await handleRunAbort(this.ctx, envelope);
 			case "run.proceed_while_running":
@@ -1063,6 +1106,31 @@ export class HubServerTransport implements NativeHubTransport {
 			});
 		}
 		return okReply(envelope, this.describeStatus());
+	}
+
+	private async handlePluginsReload(
+		envelope: HubCommandEnvelope,
+	): Promise<HubReplyEnvelope> {
+		const plugin =
+			typeof envelope.payload?.plugin === "string"
+				? envelope.payload.plugin.trim()
+				: "";
+		if (!plugin) {
+			return errorReply(
+				envelope,
+				"invalid_plugin",
+				"plugins.reload requires a plugin name or path",
+			);
+		}
+		const plugins = await this.plugins.reload(plugin);
+		if (plugins.length === 0) {
+			return errorReply(
+				envelope,
+				"plugin_not_found",
+				`No loaded plugin matches "${plugin}"`,
+			);
+		}
+		return okReply(envelope, { plugins });
 	}
 
 	private handleHubStatus(envelope: HubCommandEnvelope): HubReplyEnvelope {

@@ -102,7 +102,7 @@ export {
 export { PLUGIN_FILE_EXTENSIONS } from "./extensions/plugin";
 export {
 	FEATURE_FLAGS,
-	type FeatureFlag,
+	FeatureFlag,
 	FeatureFlagDefaultValue,
 	type FeatureFlagPayload,
 	type FeatureFlagsAndPayloads,
@@ -214,6 +214,7 @@ export {
 	type ChatCompatibleModelDescriptor,
 	type ChatModelModalities,
 	isChatCompatibleModel,
+	isTranscriptionModel,
 	type ModelCapability,
 	ModelCapabilitySchema,
 	type ModelInfo,
@@ -262,6 +263,8 @@ export {
 export { serializeAbortReason } from "./llms/requests";
 export {
 	CHARS_PER_TOKEN,
+	createImageAwareReplacer,
+	ESTIMATED_TOKENS_PER_IMAGE,
 	estimateRequestInputTokens,
 	estimateTokens,
 	type TokenEstimatedRequest,
@@ -277,6 +280,7 @@ export {
 	ToolCallRecordSchema,
 	USER_REJECTED_TOOL_REASON,
 } from "./llms/tools";
+export type { StreamingAudioTranscriptionSession } from "./llms/transcription";
 export {
 	type BasicLogger,
 	type BasicLogMetadata,
@@ -292,8 +296,10 @@ export {
 } from "./parse/json";
 export { decodeJwtPayload } from "./parse/jwt";
 export { type OmitUndefinedValues, omitUndefinedValues } from "./parse/object";
+export { toPosixSeparators } from "./parse/path";
 export {
 	getDefaultShell,
+	getPowerShellEdition,
 	getShellArgs,
 	getShellInvocation,
 	getShellKind,
@@ -339,6 +345,12 @@ export {
 	stripModeNotices,
 	xmlTagsRemoval,
 } from "./prompt/format";
+export {
+	type ProviderAuthInfo,
+	type ProviderLocalCli,
+	resolveProviderApiKeyOptional,
+	resolveProviderLocalCli,
+} from "./provider-auth";
 export { CLINE_DEFAULT_MODEL_ID } from "./providers/defaults";
 export { isClineProvider } from "./providers/utils";
 export {
@@ -483,6 +495,12 @@ export {
 	resolveClineBuildEnv,
 	withResolvedClineBuildEnv,
 } from "./runtime/build-env";
+export { isBunEmbeddedModulePath } from "./runtime/bun-embedded-path";
+export type { ClineClientIdentity } from "./runtime/cline-client-identity";
+export {
+	getClineClientIdentity,
+	setClineClientIdentity,
+} from "./runtime/cline-client-identity";
 export type {
 	ClineEnvironment,
 	ClineEnvironmentConfig,
@@ -514,10 +532,19 @@ export {
 	setConnectorCliLaunchSpec,
 	setStartingConnectorInstance,
 } from "./runtime/hub-daemon-env";
+export {
+	ensureLoopbackProxyBypass,
+	LOOPBACK_NO_PROXY_HOSTS,
+} from "./runtime/loopback-proxy-bypass";
+export {
+	disableCurrentDirectoryExecutableSearch,
+	NO_DEFAULT_CURRENT_DIRECTORY_IN_EXE_PATH_ENV,
+} from "./runtime/windows-exe-path";
 export type {
 	CaptureAgentUnexpectedReasoningTokensInput,
 	CaptureSdkErrorInput,
 	CaptureTaskLifecycleEventInput,
+	CoreSpawnReason,
 	ITelemetryService,
 	OpenTelemetryClientConfig,
 	SdkTelemetryErrorComponent,
@@ -532,14 +559,19 @@ export type {
 export {
 	AGENT_UNEXPECTED_REASONING_TOKENS_EVENT,
 	buildSdkErrorProperties,
+	CORE_SPAWN_REASONS,
 	captureAgentUnexpectedReasoningTokens,
 	captureSdkError,
 	captureTaskLifecycleEvent,
+	isOtlpTraceRelayProvider,
+	markOtlpTraceRelayProvider,
 	normalizeSdkError,
+	OTLP_TRACE_RELAY_MARKER,
 	resetSdkErrorRateLimiterForTests,
 	SDK_ERROR_TELEMETRY_EVENT,
 	TASK_CANCELLED_EVENT,
 	TASK_FIRST_CHUNK_RECEIVED_EVENT,
+	TASK_MAX_TOKENS_RECOVERY_EVENT,
 	TASK_PROVIDER_REQUEST_STARTED_EVENT,
 	TASK_PROVIDER_STREAM_FAILED_EVENT,
 	TASK_PROVIDER_STREAM_STARTED_EVENT,

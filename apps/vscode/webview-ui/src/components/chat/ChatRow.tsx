@@ -35,6 +35,7 @@ import {
 } from "lucide-react"
 import { MouseEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSize } from "react-use"
+import { isOptionsAskActive } from "@/components/chat/chat-view/shared/buttonConfig"
 import { canRestoreWorkspaceFromMessage } from "@/components/chat/chat-view/utils/messageUtils"
 import { OptionsButtons } from "@/components/chat/OptionsButtons"
 import { WithCopyButton } from "@/components/common/CopyButton"
@@ -84,6 +85,7 @@ interface ChatRowProps {
 	responseStarted?: boolean
 	/** Auto-recovery decoration payload when this row is the streak's decorated error block. */
 	recovery?: ClineSayAutoRecovery
+	retryFailedRequest?: () => Promise<boolean>
 }
 
 export interface QuoteButtonState {
@@ -151,6 +153,7 @@ export const ChatRowContent = memo(
 		reasoningContent,
 		responseStarted,
 		recovery,
+		retryFailedRequest,
 	}: ChatRowContentProps) => {
 		const {
 			backgroundEditEnabled,
@@ -159,6 +162,7 @@ export const ChatRowContent = memo(
 			clineMessages,
 			showFeatureTips,
 			enableCheckpointsSetting,
+			turnState,
 		} = useExtensionState()
 		const [quoteButtonState, setQuoteButtonState] = useState<QuoteButtonState>({
 			visible: false,
@@ -831,6 +835,7 @@ export const ChatRowContent = memo(
 								reasoningContent={reasoningContent}
 								recovery={recovery}
 								responseStarted={responseStarted}
+								retryFailedRequest={retryFailedRequest}
 							/>
 						)
 					case "api_req_finished":
@@ -931,7 +936,7 @@ export const ChatRowContent = memo(
 							</div>
 						)
 					case "error":
-						return <ErrorRow errorType="error" message={message} recovery={recovery} />
+						return <ErrorRow errorType="error" message={message} recovery={recovery} retryFailedRequest={retryFailedRequest} />
 					case "auto_recovery":
 						// Invisible marker message: the active recovery decoration is
 						// rendered by the error block it attaches to (see
@@ -1033,8 +1038,6 @@ export const ChatRowContent = memo(
 								</button>
 							</div>
 						)
-					case "task_progress":
-						return <InvisibleSpacer /> // task_progress messages should be displayed in TaskHeader only, not in chat
 					case "compaction":
 						return <CompactionRow message={message} />
 					default:
@@ -1055,7 +1058,14 @@ export const ChatRowContent = memo(
 			case "ask":
 				switch (message.ask) {
 					case "mistake_limit_reached":
-						return <ErrorRow errorType="mistake_limit_reached" message={message} recovery={recovery} />
+						return (
+							<ErrorRow
+								errorType="mistake_limit_reached"
+								message={message}
+								recovery={recovery}
+								retryFailedRequest={retryFailedRequest}
+							/>
+						)
 					case "completion_result":
 						if (message.text) {
 							const hasChanges = message.text.endsWith(COMPLETION_RESULT_CHANGES_FLAG) ?? false
@@ -1112,10 +1122,7 @@ export const ChatRowContent = memo(
 								<div className="pt-3">
 									<OptionsButtons
 										inputValue={inputValue}
-										isActive={
-											(isLast && lastModifiedMessage?.ask === "followup") ||
-											(!selected && options && options.length > 0)
-										}
+										isActive={isOptionsAskActive(message, turnState, isLast, lastModifiedMessage)}
 										options={options}
 										selected={selected}
 									/>
@@ -1170,10 +1177,7 @@ export const ChatRowContent = memo(
 								<PlanCompletionOutputRow text={response || message.text || ""} />
 								<OptionsButtons
 									inputValue={inputValue}
-									isActive={
-										(isLast && lastModifiedMessage?.ask === "plan_mode_respond") ||
-										(!selected && options && options.length > 0)
-									}
+									isActive={isOptionsAskActive(message, turnState, isLast, lastModifiedMessage)}
 									options={options}
 									selected={selected}
 								/>

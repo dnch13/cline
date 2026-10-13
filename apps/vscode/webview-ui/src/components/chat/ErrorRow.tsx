@@ -11,7 +11,7 @@ import OrgClinePassRestrictionError from "@/components/chat/OrgClinePassRestrict
 import SpendLimitError from "@/components/chat/SpendLimitError"
 import { Button } from "@/components/ui/button"
 import { useClineAuth, useClineSignIn } from "@/context/ClineAuthContext"
-import { ClineError, ClineErrorType } from "../../../../src/services/error/ClineError"
+import { ClineError, ClineErrorType, MODEL_NOT_FOUND_GUIDANCE } from "../../../../src/services/error/ClineError"
 
 const _errorColor = "var(--vscode-errorForeground)"
 
@@ -160,10 +160,18 @@ interface ErrorRowProps {
 	apiReqStreamingFailedMessage?: string
 	/** Auto-recovery decoration payload when this block is the streak's decorated error block. */
 	recovery?: ClineSayAutoRecovery
+	retryFailedRequest?: () => Promise<boolean>
 }
 
 const ErrorRow = memo(
-	({ message, errorType, apiRequestFailedMessage, apiReqStreamingFailedMessage, recovery }: ErrorRowProps) => {
+	({
+		message,
+		errorType,
+		apiRequestFailedMessage,
+		apiReqStreamingFailedMessage,
+		recovery,
+		retryFailedRequest,
+	}: ErrorRowProps) => {
 		const { clineUser } = useClineAuth()
 		const rawApiError = apiRequestFailedMessage || apiReqStreamingFailedMessage
 
@@ -209,12 +217,13 @@ const ErrorRow = memo(
 						if (clineError?.isErrorType(ClineErrorType.SpendLimit)) {
 							const d = clineError._error?.details
 							return (
-								<SpendLimitError
-									budgetPeriod={d?.budget_period}
-									limitUsd={d?.limit_usd}
-									message={d?.message || errorMessage}
-									resetsAt={d?.resets_at}
-									spentUsd={d?.spent_usd}
+								<CreditLimitError
+									buyCreditsUrl={errorDetails?.buy_credits_url}
+									currentBalance={errorDetails?.current_balance}
+									message={errorDetails?.message}
+									retryFailedRequest={retryFailedRequest}
+									totalPromotions={errorDetails?.total_promotions}
+									totalSpent={errorDetails?.total_spent}
 								/>
 							)
 						}
@@ -224,9 +233,10 @@ const ErrorRow = memo(
 							return <EntitlementError message={detailMessage} />
 						}
 
-						if (clineError?.isErrorType(ClineErrorType.OrgClinePassRestriction)) {
-							return <OrgClinePassRestrictionError />
-						}
+					if (clineError?.isErrorType(ClineErrorType.Entitlement)) {
+						const detailMessage = clineError?._error?.details?.message || errorMessage
+						return <EntitlementError message={detailMessage} retryFailedRequest={retryFailedRequest} />
+					}
 
 						if (clineError?.isErrorType(ClineErrorType.ClinePassLimit)) {
 							const detailMessage = clineError?._error?.details?.message || errorMessage
@@ -259,22 +269,26 @@ const ErrorRow = memo(
 							return <ErrorBlock glyph={glyph}>{detailMessage}</ErrorBlock>
 						}
 
-						if (clineError?.isErrorType(ClineErrorType.Auth) && isClineUsageBillingProvider) {
-							return !clineUser ? (
-								// User is using Cline provider and is not logged in
-								<div className="flex flex-col gap-3">
-									<div className="flex items-center justify-center rounded border border-neutral-500/30 bg-vscode-editor-background p-6 text-center text-vscode-foreground">
-										Whoops looks like you're logged out – click below to sign in
-									</div>
-									<Button className="w-full" disabled={isLoginLoading} onClick={handleSignIn}>
-										Sign in to Cline
-										{isLoginLoading && (
-											<span className="ml-1 animate-spin">
-												<span className="codicon codicon-refresh" />
-											</span>
-										)}
-									</Button>
-									<ClineAuthStatus message={authStatusMessage} />
+					if (clineError?.isErrorType(ClineErrorType.QuotaExceeded)) {
+						const detailMessage = clineError?._error?.details?.message || errorMessage
+						return <p className="m-0 whitespace-pre-wrap text-error wrap-anywhere">{detailMessage}</p>
+					}
+
+					// A 404/405/410 is the server saying the model id or endpoint
+					// path does not exist. The host already appends this guidance
+					// when it can recognise the message text; add it here only
+					// when the status alone carried the verdict.
+					const notFoundGuidance =
+						clineError?.isErrorType(ClineErrorType.NotFound) && !errorMessage.includes(MODEL_NOT_FOUND_GUIDANCE)
+							? `The model or endpoint was not found. ${MODEL_NOT_FOUND_GUIDANCE}`
+							: undefined
+
+					if (clineError?.isErrorType(ClineErrorType.Auth) && isClineUsageBillingProvider) {
+						return !clineUser ? (
+							// User is using Cline provider and is not logged in
+							<div className="flex flex-col gap-3">
+								<div className="flex items-center justify-center rounded border border-neutral-500/30 bg-vscode-editor-background p-6 text-center text-vscode-foreground">
+									Whoops looks like you're logged out – click below to sign in
 								</div>
 							) : (
 								// Don't show sign in button after the user has logged in, just ask them to retry
@@ -321,7 +335,34 @@ const ErrorRow = memo(
 
 				case "diff_error":
 					return (
-						<ErrorBlock>The model used search patterns that don't match anything in the file. Retrying...</ErrorBlock>
+						<p className="m-0 whitespace-pre-wrap text-error wrap-anywhere flex flex-col gap-3">
+							{/* Display the well-formatted error extracted from the ClineError instance */}
+
+							<header>
+								{providerId && <span className="uppercase">[{providerId}] </span>}
+								{errorCode && <span>{errorCode}</span>}
+								{errorMessage}
+								{requestId && <div>Request ID: {requestId}</div>}
+							</header>
+
+							{notFoundGuidance && <div>{notFoundGuidance}</div>}
+
+							{/* Windows Powershell Issue */}
+							{errorMessage?.toLowerCase()?.includes("powershell") && (
+								<div>
+									It seems like you're having Windows PowerShell issues, please see this{" "}
+									<a
+										className="underline text-inherit"
+										href="https://github.com/cline/cline/wiki/TroubleShooting-%E2%80%90-%22PowerShell-is-not-recognized-as-an-internal-or-external-command%22">
+										troubleshooting guide
+									</a>
+									.
+								</div>
+							)}
+
+							{/* Display raw API error if different from parsed error message */}
+							{errorMessage !== rawApiError && <div>{rawApiError}</div>}
+						</p>
 					)
 
 				case "clineignore_error":
