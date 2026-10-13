@@ -142,7 +142,7 @@ async function runPool(files: string[], concurrency: number): Promise<FileResult
 			const counts = `${result.pass} pass / ${result.fail} fail`
 			process.stdout.write(`[${results.length}/${files.length}] ${status.padEnd(4)} ${counts.padEnd(20)} ${file}\n`)
 			if (failed) {
-				process.stdout.write(result.output.trimEnd() + "\n")
+				process.stdout.write(`${result.output.trimEnd()}\n`)
 			}
 		}
 	}
@@ -200,7 +200,7 @@ async function main(): Promise<void> {
 			const status = failedAgain ? "FAIL" : "ok (flaky)"
 			console.log(`[retry] ${status.padEnd(10)} ${retry.pass} pass / ${retry.fail} fail  ${failure.file}`)
 			if (failedAgain) {
-				process.stdout.write(retry.output.trimEnd() + "\n")
+				process.stdout.write(`${retry.output.trimEnd()}\n`)
 			} else {
 				recoveredFiles.push(failure.file)
 			}
